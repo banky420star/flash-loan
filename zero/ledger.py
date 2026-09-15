@@ -95,6 +95,22 @@ class Ledger:
             "model_error": r[6], "detail": r[7], "created_at": r[8],
         } for r in rows]
 
+    def fork_economics(self, limit: int = 100) -> list:
+        """Return recent realized-vs-predicted economics for reserve learning."""
+        limit = int(limit)
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        rows = self.conn.execute(
+            "SELECT success, predicted_net, realized_net, model_error "
+            "FROM fork_verifications ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [{
+            "success": bool(row[0]),
+            "predicted_net": row[1],
+            "realized_net": row[2],
+            "model_error": row[3],
+        } for row in rows]
+
     def record_cycle(self, *, block: int, detected: int, passed: int,
                      rejected: int, note: str | None = None) -> int:
         cur = self.conn.execute(
