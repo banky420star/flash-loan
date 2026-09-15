@@ -72,9 +72,12 @@ class TestRpcBlockTags(unittest.TestCase):
             "flashloan_premium_total",
             "reserves_list",
             "symbol",
+            "decimals",
             "account_data",
         ]
-        missing = [name for name in required if "block" not in inspect.signature(getattr(AaveV3, name)).parameters]
+        missing = [name for name in required
+                   if not hasattr(AaveV3, name)
+                   or "block" not in inspect.signature(getattr(AaveV3, name)).parameters]
         self.assertEqual(missing, [], f"Aave reads missing block parameter: {missing}")
 
 
