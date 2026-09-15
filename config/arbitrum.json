@@ -24,6 +24,10 @@
     "min_size": 10,
     "max_size": 50000,
     "eth_for_gas": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    "execution": {
+      "swap_router_02": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      "slippage_bps": 20
+    },
     "cycles": [
       {
         "name": "USDC->WETH 0.05% | WETH->USDC 0.3%",
