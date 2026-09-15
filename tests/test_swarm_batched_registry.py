@@ -1,6 +1,8 @@
+import json
 import unittest
 
 from zero.keccak import selector_hex
+from zero.rpc import Rpc
 from zero.swarm import TokenInfo
 from zero.swarm_batch import build_token_registry_batched
 
@@ -19,6 +21,10 @@ def abi_string(value: str) -> bytes:
     raw = value.encode()
     padded = raw + b"\0" * ((32 - len(raw) % 32) % 32)
     return abi_uint(32) + abi_uint(len(raw)) + padded
+
+
+def rpc_hex(raw: bytes) -> str:
+    return "0x" + raw.hex()
 
 
 class FakeAave:
@@ -63,10 +69,42 @@ class FakeRpc:
         return out
 
 
-class FakeEngine:
+class MemberErrorTransport:
+    """Return one JSON-RPC member error while every other member succeeds."""
+
     def __init__(self):
+        self.payloads = []
+
+    def post(self, payload: bytes) -> bytes:
+        calls = json.loads(payload)
+        self.payloads.append(calls)
+        results = []
+        for call in calls:
+            idx = call["id"]
+            if idx == 3:  # TOKEN_B symbol()
+                results.append({
+                    "jsonrpc": "2.0", "id": idx,
+                    "error": {"code": -32000, "message": "token symbol reverted"},
+                })
+                continue
+            values = {
+                0: abi_string("TOKA"),
+                1: abi_uint(18),
+                2: abi_uint(2500 * 10**8),
+                4: abi_uint(6),
+                5: abi_uint(1 * 10**8),
+            }
+            results.append({
+                "jsonrpc": "2.0", "id": idx,
+                "result": rpc_hex(values[idx]),
+            })
+        return json.dumps(results).encode()
+
+
+class FakeEngine:
+    def __init__(self, rpc=None):
         self.aave = FakeAave()
-        self.rpc = FakeRpc()
+        self.rpc = rpc or FakeRpc()
 
 
 class TestBatchedTokenRegistry(unittest.TestCase):
@@ -86,6 +124,22 @@ class TestBatchedTokenRegistry(unittest.TestCase):
         self.assertEqual(registry["TOKA"], TokenInfo(
             symbol="TOKA", address=TOKEN_A.lower(), decimals=18,
             price_usd=2500.0))
+
+    def test_one_rpc_member_error_skips_only_that_token(self):
+        transport = MemberErrorTransport()
+        engine = FakeEngine(Rpc("http://example", transport=transport, retries=1))
+
+        registry = build_token_registry_batched(
+            engine, 123, pool=POOL, oracle=ORACLE, max_batch=100)
+
+        self.assertEqual(len(transport.payloads), 1)
+        self.assertTrue(all(call["params"][1] == hex(123)
+                            for call in transport.payloads[0]))
+        self.assertEqual(registry, {
+            "TOKA": TokenInfo(
+                symbol="TOKA", address=TOKEN_A.lower(), decimals=18,
+                price_usd=2500.0),
+        })
 
 
 if __name__ == "__main__":
