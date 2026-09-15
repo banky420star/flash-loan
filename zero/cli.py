@@ -7,6 +7,8 @@
     python3 -m zero.cli candidate
     python3 -m zero.cli calldata
     python3 -m zero.cli fork-arb
+    python3 -m zero.cli swarm-once
+    python3 -m zero.cli swarm [--interval 5]
     python3 -m zero.cli shadow [--once]
     python3 -m zero.cli ledger [--tail 20]
     python3 -m zero.cli fork-status [--block N]
@@ -31,6 +33,7 @@ from .gate import Gate
 from .keccak import selector_hex
 from .ledger import Ledger
 from .rpc import Rpc, encode_address, encode_uint, to_checksum
+from .swarm import SwarmSupervisor
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config",
                            "arbitrum.json")
@@ -54,6 +57,18 @@ def _engine(ledger_path: str | None = None) -> ShadowEngine:
     cfg = load_config()
     path = ledger_path or cfg.get("ledger_path", "zero_ledger.db")
     return ShadowEngine(cfg["rpc_url"], cfg, Ledger(path))
+
+
+def _swarm_supervisor(ledger_path: str | None = None) -> SwarmSupervisor:
+    cfg = load_config()
+    path = ledger_path or cfg.get("ledger_path", "zero_ledger.db")
+    ledger = Ledger(path)
+    engine = ShadowEngine(cfg["rpc_url"], cfg, ledger)
+
+    def verifier(payload: dict) -> int:
+        return run_live_candidate_fork(cfg["rpc_url"], payload)
+
+    return SwarmSupervisor(engine, cfg, ledger, verifier=verifier)
 
 
 def _fork_block(cfg: dict, requested: int | None) -> int:
@@ -180,6 +195,39 @@ def cmd_fork_arb(args):
     return run_live_candidate_fork(cfg["rpc_url"], payload)
 
 
+def cmd_swarm_once(args):
+    supervisor = _swarm_supervisor(getattr(args, "ledger", None))
+    result = supervisor.run_block()
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
+def cmd_swarm(args):
+    supervisor = _swarm_supervisor(getattr(args, "ledger", None))
+    while True:
+        try:
+            result = supervisor.run_block()
+            print(
+                f"block {result['block']} "
+                f"workers={result['active_workers']} "
+                f"routes={result['routes_scanned']} "
+                f"positive={result['positive_net']} "
+                f"best_net={result['best_expected_net']} "
+                f"fork={result['fork_verifications_passed']}/"
+                f"{result['fork_verifications_attempted']} "
+                f"failures={result['worker_failures']} "
+                f"({result['elapsed_s']:.2f}s)"
+            )
+        except KeyboardInterrupt:
+            return 0
+        except Exception as exc:
+            print(f"swarm cycle error: {type(exc).__name__}: {exc}")
+        try:
+            time.sleep(args.interval)
+        except KeyboardInterrupt:
+            return 0
+
+
 def cmd_shadow(args):
     eng = _engine()
     while True:
@@ -261,6 +309,15 @@ def main(argv=None):
     sub.add_parser("candidate", help="print current PASS arbitrage candidates").set_defaults(func=cmd_candidate)
     sub.add_parser("calldata", help="encode best PASS candidate for fork replay").set_defaults(func=cmd_calldata)
     sub.add_parser("fork-arb", help="scan and replay best PASS candidate on its exact fork block").set_defaults(func=cmd_fork_arb)
+
+    so = sub.add_parser("swarm-once", help="run one 20-worker exact-block swarm cycle")
+    so.add_argument("--ledger", default=None)
+    so.set_defaults(func=cmd_swarm_once)
+    sw = sub.add_parser("swarm", help="run the 20-worker swarm continuously")
+    sw.add_argument("--interval", type=float, default=5.0)
+    sw.add_argument("--ledger", default=None)
+    sw.set_defaults(func=cmd_swarm)
+
     sh = sub.add_parser("shadow", help="run shadow cycles (no signing)")
     sh.add_argument("--once", action="store_true")
     sh.add_argument("--interval", type=float, default=10.0)
