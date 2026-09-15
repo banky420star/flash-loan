@@ -160,9 +160,6 @@ class ShadowEngine:
             decision = "PASS" if expected_net_usd > 0 else "REJECT"
             reason = "ok" if decision == "PASS" else "expected_net_usd <= 0"
 
-            # The fork executor settles profit in the base token. Requiring
-            # gas + reserve in base units, plus one raw token quantum, makes
-            # the executable minimum strictly positive after modeled costs.
             one_raw = 1 / (10 ** int(cycle_config["base_decimals"]))
             min_profit_base = (
                 (gas_usd + float(model_reserve_usd)) / base_price_usd
@@ -184,6 +181,7 @@ class ShadowEngine:
                 "route_id": cycle_config.get("route_id"),
                 "name": cycle_config.get("name", "?"),
                 "size": best["size"],
+                "loan_notional_usd": float(best["size"]) * base_price_usd,
                 "gross": best["gross"],
                 "gross_usd": best["gross_usd"],
                 "net": expected_net_usd,
