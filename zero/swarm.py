@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from decimal import Decimal
 import threading
 
 from .keccak import keccak256
@@ -66,3 +67,58 @@ class RouteLeaseRegistry:
             stale = [key for key in self._leases if key[0] < cutoff]
             for key in stale:
                 del self._leases[key]
+
+
+@dataclass(frozen=True)
+class SwarmCandidate:
+    candidate_id: str
+    route_id: str
+    worker_id: str
+    manager_id: str
+    block: int
+    loan_size: float
+    gross_profit: float
+    flash_fee: float
+    gas_cost: float
+    model_reserve: float
+    expected_net: float
+    roi: float
+    timestamp: float
+    payload: dict | None = None
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def swarm_expected_net(gross: float, flash_fee: float, gas: float,
+                       model_reserve: float) -> float:
+    value = (
+        Decimal(str(gross))
+        - Decimal(str(flash_fee))
+        - Decimal(str(gas))
+        - Decimal(str(model_reserve))
+    )
+    return float(value)
+
+
+class OpportunityBook:
+    """One positive-net candidate per route per block, ranked by expected net."""
+
+    def __init__(self):
+        self._items: dict[tuple[int, str], SwarmCandidate] = {}
+
+    def add(self, candidate: SwarmCandidate) -> bool:
+        if candidate.expected_net <= 0:
+            return False
+        key = (int(candidate.block), candidate.route_id)
+        if key in self._items:
+            return False
+        self._items[key] = candidate
+        return True
+
+    def ranked(self) -> list[SwarmCandidate]:
+        return sorted(
+            self._items.values(),
+            key=lambda candidate: candidate.expected_net,
+            reverse=True,
+        )
