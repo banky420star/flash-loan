@@ -43,10 +43,17 @@ class Cycle:
             r2 = UniswapV3Pool.quote(state_b, r1["out"], self._dir_b,
                                      self.quote_decimals, self.base_decimals,
                                      self.pool_b.fee_percent)
-            if r1["out_of_range"] or r2["out_of_range"]:
-                curve.append({"size": q, "gross": float("-inf"), "out_of_range": True})
+            row = {
+                "size": q,
+                "hop1_out": r1["out"],
+                "hop2_out": r2["out"],
+                "out_of_range": bool(r1["out_of_range"] or r2["out_of_range"]),
+            }
+            if row["out_of_range"]:
+                row["gross"] = float("-inf")
             else:
-                curve.append({"size": q, "gross": r2["out"] - q, "out_of_range": False})
+                row["gross"] = r2["out"] - q
+            curve.append(row)
         return curve
 
 
