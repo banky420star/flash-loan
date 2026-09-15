@@ -85,6 +85,14 @@ class AaveV3:
         chunk = b"".join(w.to_bytes(32, "big") for w in words[start + 1:])
         return chunk[:length].decode()
 
+    def decimals(self, token: str, block: int | str = "latest") -> int:
+        """ERC20 decimals() at an explicit block."""
+        raw = self.rpc.eth_call(token, selector_hex("decimals()"), block=block)
+        words = decode_uints(raw)
+        if not words:
+            raise ValueError("empty decimals reply")
+        return words[0]
+
     def account_data(self, pool: str, user: str,
                      block: int | str = "latest") -> dict:
         """getUserAccountData returns 6 uints, all 8-dec USD except HF."""
