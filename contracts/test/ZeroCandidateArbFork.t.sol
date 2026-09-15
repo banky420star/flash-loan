@@ -49,7 +49,7 @@ contract ZeroCandidateArbForkTest {
     address internal constant AAVE_PROVIDER =
         0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb;
     address internal constant USDC =
-        0xaf88d065e77c8cc2239327c5edb3a432268e5831;
+        0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address internal constant WETH =
         0x82aF49447D8a07e3bd95BD0d56f35241523fBab1;
     address internal constant SWAP_ROUTER_02 =
