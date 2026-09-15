@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from zero.rpc import Rpc, RpcError
 
@@ -23,6 +24,19 @@ class RecordingTransport:
              "result": "0x" + call["params"][0]["data"].removeprefix("0x").rjust(64, "0")[-64:]}
             for call in decoded
         ]).encode()
+
+
+class TransientTransport(RecordingTransport):
+    def __init__(self, failures=1):
+        super().__init__()
+        self.failures = failures
+        self.attempts = 0
+
+    def post(self, payload: bytes) -> bytes:
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise OSError("temporary throttle")
+        return super().post(payload)
 
 
 class TestPinnedBatchEthCall(unittest.TestCase):
@@ -53,6 +67,17 @@ class TestPinnedBatchEthCall(unittest.TestCase):
                          [1, 2, 3, 4, 5])
         for payload in transport.payloads:
             self.assertTrue(all(call["params"][1] == hex(456) for call in payload))
+
+    def test_batch_retries_transient_transport_failure(self):
+        transport = TransientTransport(failures=1)
+        rpc = Rpc("http://example", transport=transport, retries=3)
+        with patch("zero.rpc.time.sleep") as sleep:
+            out = rpc.batch_eth_call([
+                ("0x" + "11" * 20, "0x01"),
+            ], block=789, max_batch=10)
+        self.assertEqual(transport.attempts, 2)
+        sleep.assert_called_once()
+        self.assertEqual(int.from_bytes(out[0], "big"), 1)
 
     def test_invalid_batch_size_is_rejected(self):
         rpc = Rpc("http://example", transport=RecordingTransport())
