@@ -10,11 +10,46 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .fork import ForkResult
+from .reserve import AdaptiveReserve, ReserveEstimate
 from .swarm import SwarmCandidate, SwarmSupervisor
 
 
 class PnlSwarmSupervisor(SwarmSupervisor):
     """Swarm supervisor that enriches and persists structured fork outcomes."""
+
+    def _reserve_estimate(self) -> ReserveEstimate:
+        swarm_cfg = self.config.get("swarm", {})
+        adaptive = swarm_cfg.get("adaptive_reserve", {}) or {}
+        static = float(swarm_cfg.get("model_reserve_usd", 0.0) or 0.0)
+        if not bool(adaptive.get("enabled", False)):
+            return ReserveEstimate(static, 0)
+
+        policy = AdaptiveReserve(
+            lookback=int(adaptive.get("lookback", 100)),
+            min_samples=int(adaptive.get("min_samples", 5)),
+            quantile=float(adaptive.get("quantile", 0.90)),
+            floor_usd=float(adaptive.get("floor_usd", 0.0)),
+            cap_usd=float(adaptive.get("cap_usd", 25.0)),
+            bootstrap_reserve_usd=float(
+                adaptive.get("bootstrap_reserve_usd", static)),
+        )
+        rows = self.ledger.fork_economics(limit=policy.lookback)
+        return policy.estimate(rows)
+
+    def run_block(self, block: int | None = None) -> dict:
+        """Resolve one reserve on the CEO thread and freeze it for this cycle."""
+        estimate = self._reserve_estimate()
+        swarm_cfg = self.config.setdefault("swarm", {})
+        previous = swarm_cfg.get("model_reserve_usd", 0.0)
+        self._cycle_model_reserve_usd = float(estimate.value_usd)
+        swarm_cfg["model_reserve_usd"] = self._cycle_model_reserve_usd
+        try:
+            result = super().run_block(block)
+        finally:
+            swarm_cfg["model_reserve_usd"] = previous
+        result["adaptive_reserve_usd"] = self._cycle_model_reserve_usd
+        result["reserve_samples"] = int(estimate.samples)
+        return result
 
     def _fork_payload(self, candidate: SwarmCandidate) -> dict:
         payload = super()._fork_payload(candidate)
