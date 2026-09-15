@@ -58,6 +58,14 @@ class AaveV3:
         raw = self.rpc.eth_call(oracle, data)
         return decode_uints(raw)[0] / 1e8
 
+    def flashloan_premium_total(self, pool: str) -> int:
+        """Return Aave flash-loan premium in basis points from the live Pool."""
+        raw = self.rpc.eth_call(pool, selector_hex("FLASHLOAN_PREMIUM_TOTAL()"))
+        words = decode_uints(raw)
+        if not words:
+            raise ValueError("empty FLASHLOAN_PREMIUM_TOTAL reply")
+        return words[0]
+
     # ------------------------------------------------------------ registry
     def reserves_list(self, pool: str) -> list:
         """getReservesList() -> [address]; dynamic abi-encoded array.

@@ -56,3 +56,20 @@ jobs:
           ARBITRUM_RPC_URL: https://arb1.arbitrum.io/rpc
           FORK_BLOCK: ${{ inputs.fork_block }}
         run: bash scripts/fork_test.sh
+
+  candidate-fork-smoke:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Real Aave plus Uniswap candidate replay on Arbitrum fork
+        env:
+          ARBITRUM_RPC_URL: https://arb1.arbitrum.io/rpc
+          FORK_BLOCK: ${{ inputs.fork_block }}
+        run: bash scripts/candidate_fork_test.sh
