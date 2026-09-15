@@ -1,7 +1,7 @@
 # ZERO Engine v0.5 — Swarm Market Division Design
 
 ## Status
-Approved in chat for implementation as the next v0.5 slice.
+Approved in chat as the next v0.5 slice. Written spec pending final user review before implementation planning.
 
 ## Goal
 Expand ZERO from a single narrow two-pool scan into one continuously running supervisor with 20 concurrent market-scanning workers. The system must accept arbitrage candidates only when expected net profit remains positive after modeled costs, even when the profit is very small.
@@ -34,7 +34,7 @@ One supervisor owns the scan cycle and global opportunity book. It:
 - deduplicates candidates,
 - ranks candidates by expected net profit,
 - dispatches only positive-net candidates to fork verification,
-- records predicted-versus-realized results.
+- records candidate economics and fork pass/fail metadata.
 
 The CEO is not counted as one of the 20 scanners.
 
@@ -233,7 +233,7 @@ Before merge:
 - real-time mempool/private-orderflow integration,
 - liquidation worker expansion,
 - learned adaptive reserve model,
-- automatic realized P&L ingestion from Foundry into the ledger if not already implemented,
+- automatic realized P&L ingestion from Foundry into the ledger,
 - VPS/service packaging,
 - wallet/nonce management,
 - cross-chain scanning.
