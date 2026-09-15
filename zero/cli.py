@@ -4,6 +4,8 @@
     python3 -m zero.cli prices
     python3 -m zero.cli hf 0xADDR
     python3 -m zero.cli scan
+    python3 -m zero.cli candidate
+    python3 -m zero.cli calldata
     python3 -m zero.cli shadow [--once]
     python3 -m zero.cli ledger [--tail 20]
     python3 -m zero.cli fork-status [--block N]
@@ -13,12 +15,15 @@
 """
 
 import argparse
+from dataclasses import fields
 import json
 import os
 import sys
 import time
 
 from .aave import AaveV3, bucket_for
+from .calldata import build_uniswap_v3_steps
+from .candidate import ArbitrageCandidate
 from .engine import ShadowEngine
 from .fork_cli import build_status, command_line, run_fork_test
 from .gate import Gate
@@ -56,6 +61,29 @@ def _fork_block(cfg: dict, requested: int | None) -> int:
     return Rpc(cfg["rpc_url"]).block_number()
 
 
+def _candidate_from_dict(data: dict) -> ArbitrageCandidate:
+    names = {f.name for f in fields(ArbitrageCandidate)}
+    return ArbitrageCandidate(**{name: data[name] for name in names})
+
+
+def build_candidate_calldata(result: dict, cfg: dict) -> dict | None:
+    candidates = result.get("arbitrage", {}).get("candidates", [])
+    if not candidates:
+        return None
+    best_dict = max(candidates, key=lambda c: c["predicted_net"])
+    candidate = _candidate_from_dict(best_dict)
+    execution = cfg["arbitrage"]["execution"]
+    steps = build_uniswap_v3_steps(
+        candidate,
+        execution["swap_router_02"],
+        slippage_bps=int(execution.get("slippage_bps", 20)),
+    )
+    return {
+        "candidate": candidate.as_dict(),
+        "steps": [step.as_dict() for step in steps],
+    }
+
+
 def cmd_doctor(args):
     cfg = load_config()
     rpc = Rpc(cfg["rpc_url"])
@@ -83,7 +111,6 @@ def cmd_doctor(args):
 
 
 def cmd_prices(args):
-    """Prices derived on-chain: reserves list from the Pool, no hardcoding."""
     cfg = load_config()
     rpc = Rpc(cfg["rpc_url"])
     aave = AaveV3(rpc, cfg["aave_provider"])
@@ -115,8 +142,24 @@ def cmd_hf(args):
 
 def cmd_scan(args):
     eng = _engine()
-    res = eng.run_once()
-    print(json.dumps(res, indent=2, default=str))
+    print(json.dumps(eng.run_once(), indent=2, default=str))
+
+
+def cmd_candidate(args):
+    result = _engine().run_once()
+    print(json.dumps(result["arbitrage"].get("candidates", []), indent=2))
+
+
+def cmd_calldata(args):
+    cfg = load_config()
+    result = _engine().run_once()
+    payload = build_candidate_calldata(result, cfg)
+    if payload is None:
+        print(json.dumps({"candidate": None, "steps": [],
+                          "reason": "no_pass_candidate"}, indent=2))
+        return 3
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def cmd_shadow(args):
@@ -198,6 +241,8 @@ def main(argv=None):
     hf.add_argument("address")
     hf.set_defaults(func=cmd_hf)
     sub.add_parser("scan").set_defaults(func=cmd_scan)
+    sub.add_parser("candidate", help="print current PASS arbitrage candidates").set_defaults(func=cmd_candidate)
+    sub.add_parser("calldata", help="encode best PASS candidate for fork replay").set_defaults(func=cmd_calldata)
     sh = sub.add_parser("shadow", help="run shadow cycles (no signing)")
     sh.add_argument("--once", action="store_true")
     sh.add_argument("--interval", type=float, default=10.0)
