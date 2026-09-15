@@ -20,7 +20,7 @@ class RecordingTransport:
             ]).encode()
         return json.dumps([
             {"jsonrpc": "2.0", "id": call["id"],
-             "result": "0x" + call["params"][0]["data"].removeprefix("0x").ljust(64, "0")[:64]}
+             "result": "0x" + call["params"][0]["data"].removeprefix("0x").rjust(64, "0")[-64:]}
             for call in decoded
         ]).encode()
 
