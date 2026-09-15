@@ -147,6 +147,18 @@ class TokenInfo:
     price_usd: float
 
 
+@dataclass(frozen=True)
+class ScanContext:
+    block: int
+    aave_pool: str
+    oracle: str
+    premium_bps: int
+    eth_price_usd: float
+    gas_usd: float
+    tokens: dict[str, TokenInfo]
+    pool_states: dict[str, dict]
+
+
 def build_topology(config: dict) -> tuple[list[ManagerSpec], list[WorkerSpec]]:
     swarm = config.get("swarm", {})
     manager_rows = swarm.get("managers", [])
@@ -186,10 +198,11 @@ def build_topology(config: dict) -> tuple[list[ManagerSpec], list[WorkerSpec]]:
     return managers, workers
 
 
-def build_token_registry(aave, block: int) -> dict[str, TokenInfo]:
+def build_token_registry(aave, block: int, *, pool: str | None = None,
+                         oracle: str | None = None) -> dict[str, TokenInfo]:
     """Resolve Aave reserve token metadata once at one pinned block."""
-    pool = aave.pool_address(block=block)
-    oracle = aave.oracle_address(block=block)
+    pool = pool or aave.pool_address(block=block)
+    oracle = oracle or aave.oracle_address(block=block)
     registry: dict[str, TokenInfo] = {}
     for token in aave.reserves_list(pool, block=block):
         try:
@@ -284,3 +297,46 @@ def discover_uniswap_routes(engine, pair: tuple[str, str],
                 "pools": [pool_a, pool_b],
             })
     return routes
+
+
+def build_scan_context(engine, block: int,
+                       route_catalog: list[dict]) -> ScanContext:
+    """Freeze all shared Aave/oracle/pool state for one swarm scan block."""
+    block = int(block)
+    for route in route_catalog:
+        if int(route.get("block", block)) != block:
+            raise ValueError("mixed-block scan context")
+
+    aave_pool = engine.aave.pool_address(block=block)
+    oracle = engine.aave.oracle_address(block=block)
+    premium_bps = engine.aave.flashloan_premium_total(aave_pool, block=block)
+    tokens = build_token_registry(
+        engine.aave, block, pool=aave_pool, oracle=oracle)
+    eth_asset = engine.config["arbitrage"]["eth_for_gas"]
+    eth_price_usd = float(engine.aave.asset_price(
+        oracle, eth_asset, block=block))
+    gas_usd = float(engine._gas_cost_usd(eth_price_usd))
+
+    pool_states: dict[str, dict] = {}
+    pool_configs: dict[str, dict] = {}
+    for route in route_catalog:
+        for pool_cfg in route.get("pools", []):
+            address = str(pool_cfg.get("address", "")).lower()
+            if not address or address in pool_configs:
+                continue
+            pool_configs[address] = pool_cfg
+
+    for address, pool_cfg in pool_configs.items():
+        pool = engine._pool(pool_cfg, block=block)
+        pool_states[address] = pool.fetch_state(block=block)
+
+    return ScanContext(
+        block=block,
+        aave_pool=aave_pool,
+        oracle=oracle,
+        premium_bps=int(premium_bps),
+        eth_price_usd=eth_price_usd,
+        gas_usd=gas_usd,
+        tokens=tokens,
+        pool_states=pool_states,
+    )
