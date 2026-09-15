@@ -109,6 +109,7 @@ class TestSwarmScanner(unittest.TestCase):
         self.assertEqual(DummyCycle.seen_sizes, [1.0, 2.0, 4.0])
         self.assertEqual(row["decision"], "PASS")
         self.assertEqual(row["candidate"]["loan_size"], 2.0)
+        self.assertAlmostEqual(row["loan_notional_usd"], 200.0)
         self.assertAlmostEqual(row["expected_net_usd"], 2.0)
 
     def test_tiny_positive_net_is_admitted_and_min_profit_covers_costs(self):
@@ -124,6 +125,7 @@ class TestSwarmScanner(unittest.TestCase):
                 model_reserve_usd=0.009, context=context,
             )
         self.assertEqual(row["decision"], "PASS")
+        self.assertAlmostEqual(row["loan_notional_usd"], 100.0)
         self.assertAlmostEqual(row["expected_net_usd"], 0.001)
         self.assertGreater(row["candidate"]["min_profit"], 0.049)
         self.assertAlmostEqual(row["candidate"]["predicted_net"], 0.001)
