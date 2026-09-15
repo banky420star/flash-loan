@@ -1,0 +1,59 @@
+{
+  "chain": "arbitrum-one",
+  "chain_id": 42161,
+  "rpc_url": "https://arb1.arbitrum.io/rpc",
+  "aave_provider": "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+  "uniswap_v3_factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  "ledger_path": "zero_ledger.db",
+  "gas_limit": 2000000,
+  "gas_price_gwei": 0.1,
+  "tokens": {
+    "WETH": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    "USDC": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "USDt0": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "USDC.e": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "DAI": "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"
+  },
+  "gate": {
+    "floor_usd": 2.0,
+    "gas_multiple": 4.0,
+    "min_roi": 0.0001,
+    "max_age_ms": 500
+  },
+  "arbitrage": {
+    "min_size": 10,
+    "max_size": 50000,
+    "eth_for_gas": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    "cycles": [
+      {
+        "name": "USDC->WETH 0.05% | WETH->USDC 0.3%",
+        "base": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "base_decimals": 6,
+        "quote_decimals": 18,
+        "pools": [
+          {
+            "token0": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+            "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+            "fee_tier": 500,
+            "fee_percent": 0.05,
+            "decimals0": 18,
+            "decimals1": 6
+          },
+          {
+            "token0": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+            "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+            "fee_tier": 3000,
+            "fee_percent": 0.3,
+            "decimals0": 18,
+            "decimals1": 6
+          }
+        ]
+      }
+    ]
+  },
+  "liquidation": {
+    "bonus": 0.05,
+    "eth_for_gas": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    "watchlist": []
+  }
+}
