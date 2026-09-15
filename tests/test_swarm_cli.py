@@ -57,7 +57,7 @@ class TestSwarmCli(unittest.TestCase):
         self.assertIn("block 777", out.getvalue())
         self.assertIn("workers=20", out.getvalue())
 
-    def test_swarm_factory_wires_exact_fork_verifier(self):
+    def test_swarm_factory_wires_structured_fork_verifier(self):
         sentinel = object()
         cfg = {
             "rpc_url": "https://example.invalid",
@@ -68,7 +68,7 @@ class TestSwarmCli(unittest.TestCase):
         with patch.object(cli, "load_config", return_value=cfg), \
              patch.object(cli, "Ledger") as ledger_cls, \
              patch.object(cli, "ShadowEngine") as engine_cls, \
-             patch.object(cli, "SwarmSupervisor", return_value=sentinel) as supervisor_cls:
+             patch.object(cli, "PnlSwarmSupervisor", return_value=sentinel) as supervisor_cls:
             ledger = ledger_cls.return_value
             engine = engine_cls.return_value
             result = cli._swarm_supervisor()
@@ -78,8 +78,9 @@ class TestSwarmCli(unittest.TestCase):
         self.assertIs(args[1], cfg)
         self.assertIs(args[2], ledger)
         verifier = kwargs["verifier"]
-        with patch.object(cli, "run_live_candidate_fork", return_value=7) as run:
-            self.assertEqual(verifier({"candidate": {}, "steps": []}), 7)
+        marker = object()
+        with patch.object(cli, "run_live_candidate_fork_result", return_value=marker) as run:
+            self.assertIs(verifier({"candidate": {}, "steps": []}), marker)
         run.assert_called_once_with(cfg["rpc_url"], {"candidate": {}, "steps": []})
 
 
