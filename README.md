@@ -1,76 +1,143 @@
-# ⚡ ZERO Engine — v0.2 Shadow Mode
+# ⚡ ZERO Engine — v0.3 Fork Verification
 
-Zero-principal DeFi opportunity scanner. **Live Arbitrum One data in, decisions
-recorded out — and nothing ever leaves your machine.** No wallet, no private
-key, no signing, no broadcast. The ledger is the product: evidence of whether
-an executable edge exists before any money is ever risked.
+ZERO Engine is a read-only Arbitrum One opportunity scanner with a **local-only
+fork verification stage**. Live chain data is used for detection; any write-capable
+simulation is restricted to an Anvil loopback RPC. There is still no private key,
+no production signer, and no mainnet broadcast path.
 
-```
+```text
 ARBITRUM ONE (read-only RPC)
         │
         ▼
- Aave V3 ── oracle prices, pool registry, account health (getUserAccountData)
- Uniswap V3 ── factory.getPool, slot0 + liquidity, exact single-range quotes
+ Aave V3 + Uniswap V3
         │
         ▼
- SCANNERS ── arbitrage (size-swept 2-hop cycles) + liquidations (HF watchlist)
+ SCANNERS + RISK GATE
         │
         ▼
- RISK GATE ── minProfit = max(floor, k×gas, roi×size), stale rejection
+ PASS candidate at block N
         │
         ▼
- SQLITE LEDGER ── every candidate, PASS or REJECT, with reasons
+ ANVIL exact-block fork (127.0.0.1 only)
+        │
+        ▼
+ ZeroForkExecutor.sol
+        │
+        ├── real Aave V3 flashLoanSimple on the fork
+        ├── local protocol calls
+        ├── repayment enforcement
+        └── minimum-profit enforcement
+        │
+        ▼
+ fork verification evidence / SQLite ledger
 ```
 
-## Run it
-
-Double-click **`RUN_ZERO.command`** (Finder icon: ⚡) or:
+## Shadow-mode commands
 
 ```bash
-python3 -m zero.cli doctor    # verify chain connectivity + contract registry
-python3 -m zero.cli prices    # Aave oracle prices (reserves discovered on-chain)
-python3 -m zero.cli hf 0x...  # health factor of any account
-python3 -m zero.cli scan      # one shadow cycle, JSON output
-python3 -m zero.cli shadow    # continuous shadow mode
-python3 -m zero.cli ledger    # audit trail + stats
+python3 -m zero.cli doctor
+python3 -m zero.cli prices
+python3 -m zero.cli hf 0x...
+python3 -m zero.cli scan
+python3 -m zero.cli shadow --interval 30
+python3 -m zero.cli ledger
 ```
 
-Tests: `python3 -m unittest discover -s tests`
+## v0.3 fork commands
 
-## What's real in v0.2
+Install Foundry first (`forge` + `anvil`):
 
-- **Pure-Python keccak-256** — ABI selectors computed, not hardcoded.
-  The permutation is verified against `hashlib.sha3_256` (same permutation,
-  different padding); famous selectors (`a9059cbb` transfer) pin the padding.
-- **Exact Uniswap V3 single-range swap math** in rational arithmetic
-  (`fractions.Fraction`), derived from the virtual AMM
-  `x = L/√P, y = L·√P` — no float error, and swaps that would cross a tick
-  range are flagged `out_of_range` and rejected rather than misquoted.
-- **Aave V3 registry resolution** — Pool and Oracle addresses are fetched
-  live from `PoolAddressesProvider`, never hardcoded.
-- **On-chain token discovery** — the reserve list and symbols come from the
-  Pool registry, which caught two wrong hard-coded addresses during testing.
-- **Arbitrage sizing** — geometric loan-size sweep per cycle; the scanner
-  finds `q* = argmax P(q)` instead of guessing a fixed size.
-- **Injectable RPC transport** — the whole engine runs offline against a
-  fake chain, which is how 28 unit tests pass in under a second.
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+```
 
-## What is deliberately NOT in v0.2
+Check whether Anvil is available and pin a specific Arbitrum block:
 
-- No signer, no key handling, no transaction construction, no broadcasting.
-- No borrower indexing (watchlist only — full event indexing is next stage).
-- No fork simulation (Anvil stage), no executor contract, no MEV bidding.
+```bash
+python3 -m zero.cli fork-status --block 123456789
+```
 
-## Honest limitations
+Print the exact local fork command without starting anything:
 
-- Single-range V3 quotes: large swaps cross ticks; the scanner flags rather
-  than crosses. Fork simulation replaces this in v0.3.
-- Liquidation P&L assumes a configurable close factor (0.5) and bonus (5%);
-  real values come from reserve config in the contract stage.
-- Gas is a configured estimate, not `eth_estimateGas`.
-- Detection≠capture: shadow profits are *evidence*, never claimed P&L.
+```bash
+python3 -m zero.cli fork-command --block 123456789
+```
 
-## Config
+Run the real Aave V3 flash-loan smoke test against an Arbitrum fork:
 
-`config/arbitrum.json` — chain id, RPC URL, gate parameters, cycle
-definitions, watchlist. Gate defaults: floor $2, 4× gas, 0.01% ROI.
+```bash
+python3 -m zero.cli fork-test --block 123456789
+```
+
+Or directly:
+
+```bash
+FORK_BLOCK=123456789 bash scripts/fork_test.sh
+```
+
+See stored fork-verification evidence:
+
+```bash
+python3 -m zero.cli fork-ledger --tail 20
+```
+
+## Safety boundary
+
+`zero/fork.py` rejects write targets unless the RPC hostname is one of:
+
+```text
+127.0.0.1
+localhost
+::1
+```
+
+The upstream Arbitrum RPC is therefore used only to **read/fork state**. The
+simulation executor is intended for local fork use and is explicitly not a
+production executor.
+
+## What v0.3 verifies
+
+- Exact-block Anvil command generation.
+- Hard rejection of remote write targets.
+- A simulation-only Solidity executor with Aave callback validation.
+- Real `flashLoanSimple` against the forked Aave V3 Arbitrum deployment.
+- Repayment approval and minimum-profit enforcement.
+- Fork-result persistence: block, strategy, gas, predicted net, realized net,
+  and model error.
+- Existing v0.2 scanner remains read-only.
+
+## Tests
+
+Offline Python and CLI tests:
+
+```bash
+bash scripts/cli_test.sh
+```
+
+Compile the Solidity verifier:
+
+```bash
+forge build
+```
+
+Run the live-state fork smoke:
+
+```bash
+bash scripts/fork_test.sh
+```
+
+GitHub Actions runs Python tests and `forge build` for pushes/PRs. The real
+Arbitrum fork smoke is available via **workflow_dispatch** because public RPC
+availability is an external dependency.
+
+## Current limitations
+
+- v0.3 verifies the execution environment and Aave flash-loan lifecycle, but the
+  existing arbitrage scanner is not yet automatically translated into Solidity
+  swap calldata. That candidate-to-calldata bridge is the next subsystem.
+- The fork smoke uses a local WETH faucet contract to provide enough extra WETH
+  for the Aave premium; it proves borrowing/callback/repayment without pretending
+  that the faucet is trading profit.
+- No borrower indexer yet; liquidation discovery is still watchlist-based.
+- No production executor, private-key handling, MEV bidding, or mainnet writes.
