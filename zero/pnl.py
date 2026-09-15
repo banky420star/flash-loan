@@ -7,15 +7,21 @@ happen only after the worker futures rejoin the CEO/supervisor thread.
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .fork import ForkResult
 from .reserve import AdaptiveReserve, ReserveEstimate
 from .swarm import SwarmCandidate, SwarmSupervisor
+from .swarm_batch import (
+    build_scan_context_batched,
+    build_token_registry_batched,
+    discover_uniswap_routes_batched,
+)
 
 
 class PnlSwarmSupervisor(SwarmSupervisor):
-    """Swarm supervisor that enriches and persists structured fork outcomes."""
+    """Swarm supervisor with learned reserve, batched reads, and fork P&L."""
 
     def _reserve_estimate(self) -> ReserveEstimate:
         swarm_cfg = self.config.get("swarm", {})
@@ -36,19 +42,63 @@ class PnlSwarmSupervisor(SwarmSupervisor):
         rows = self.ledger.fork_economics(limit=policy.lookback)
         return policy.estimate(rows)
 
+    def _build_catalog(self, block: int, workers) -> tuple[list[dict], object]:
+        """Build the same route catalog/context using bounded pinned batches."""
+        started = time.perf_counter()
+        block = int(block)
+        swarm_cfg = self.config.get("swarm", {})
+        max_batch = int(swarm_cfg.get("max_rpc_batch", 100))
+        if max_batch <= 0:
+            raise ValueError("swarm.max_rpc_batch must be positive")
+
+        aave_pool = self.engine.aave.pool_address(block=block)
+        oracle = self.engine.aave.oracle_address(block=block)
+        registry = build_token_registry_batched(
+            self.engine, block, pool=aave_pool, oracle=oracle,
+            max_batch=max_batch)
+        fee_tiers = [int(value) for value in swarm_cfg.get(
+            "fee_tiers", [100, 500, 3000, 10000])]
+
+        routes: list[dict] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for worker in workers:
+            pair = worker.primary_pair
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            routes.extend(discover_uniswap_routes_batched(
+                self.engine, pair, registry, block, fee_tiers,
+                max_batch=max_batch))
+
+        context = build_scan_context_batched(
+            self.engine, block, routes, tokens=registry,
+            aave_pool=aave_pool, oracle=oracle, max_batch=max_batch)
+        self._last_catalog_ms = (time.perf_counter() - started) * 1000.0
+        return routes, context
+
     def run_block(self, block: int | None = None) -> dict:
         """Resolve one reserve on the CEO thread and freeze it for this cycle."""
         estimate = self._reserve_estimate()
         swarm_cfg = self.config.setdefault("swarm", {})
         previous = swarm_cfg.get("model_reserve_usd", 0.0)
         self._cycle_model_reserve_usd = float(estimate.value_usd)
+        self._last_catalog_ms = 0.0
+        self._last_verify_ms = 0.0
         swarm_cfg["model_reserve_usd"] = self._cycle_model_reserve_usd
         try:
             result = super().run_block(block)
         finally:
             swarm_cfg["model_reserve_usd"] = previous
+
+        elapsed_ms = max(0.0, float(result.get("elapsed_s", 0.0)) * 1000.0)
+        catalog_ms = max(0.0, float(self._last_catalog_ms))
+        verify_ms = max(0.0, float(self._last_verify_ms))
+        scan_ms = max(0.0, elapsed_ms - catalog_ms - verify_ms)
         result["adaptive_reserve_usd"] = self._cycle_model_reserve_usd
         result["reserve_samples"] = int(estimate.samples)
+        result["catalog_ms"] = catalog_ms
+        result["scan_ms"] = scan_ms
+        result["verify_ms"] = verify_ms
         return result
 
     def _fork_payload(self, candidate: SwarmCandidate) -> dict:
@@ -66,47 +116,50 @@ class PnlSwarmSupervisor(SwarmSupervisor):
         return payload
 
     def _verify_candidates(self, candidates: list[SwarmCandidate]) -> tuple[int, int, int]:
-        if (self.verifier is None
-                or not self.config["swarm"].get("verify_positive_candidates", True)
-                or not candidates):
-            return 0, 0, 0
+        started = time.perf_counter()
+        try:
+            if (self.verifier is None
+                    or not self.config["swarm"].get("verify_positive_candidates", True)
+                    or not candidates):
+                return 0, 0, 0
 
-        max_workers = max(1, min(
-            len(candidates),
-            int(self.config["swarm"].get("max_fork_concurrency", 1)),
-        ))
+            max_workers = max(1, min(
+                len(candidates),
+                int(self.config["swarm"].get("max_fork_concurrency", 1)),
+            ))
 
-        def verify_one(candidate: SwarmCandidate):
-            try:
-                outcome = self.verifier(self._fork_payload(candidate))
-                if isinstance(outcome, ForkResult):
-                    return outcome.success, outcome
-                return int(outcome) == 0, None
-            except Exception:
-                return False, None
+            def verify_one(candidate: SwarmCandidate):
+                try:
+                    outcome = self.verifier(self._fork_payload(candidate))
+                    if isinstance(outcome, ForkResult):
+                        return outcome.success, outcome
+                    return int(outcome) == 0, None
+                except Exception:
+                    return False, None
 
-        passed = 0
-        failed = 0
-        structured: list[ForkResult] = []
-        with ThreadPoolExecutor(
-                max_workers=max_workers, thread_name_prefix="zero-fork") as executor:
-            futures = [executor.submit(verify_one, candidate)
-                       for candidate in candidates]
-            for future in as_completed(futures):
-                success, result = future.result()
-                if success:
-                    passed += 1
-                else:
-                    failed += 1
-                if result is not None:
-                    structured.append(result)
+            passed = 0
+            failed = 0
+            structured: list[ForkResult] = []
+            with ThreadPoolExecutor(
+                    max_workers=max_workers, thread_name_prefix="zero-fork") as executor:
+                futures = [executor.submit(verify_one, candidate)
+                           for candidate in candidates]
+                for future in as_completed(futures):
+                    success, result = future.result()
+                    if success:
+                        passed += 1
+                    else:
+                        failed += 1
+                    if result is not None:
+                        structured.append(result)
 
-        # Persist after all fork futures rejoin this caller. This keeps SQLite
-        # writes serialized on the supervisor thread even when fork concurrency
-        # is raised above one later.
-        for result in sorted(
-                structured,
-                key=lambda item: (item.block, item.strategy, item.gas_used)):
-            self.ledger.record_fork_verification(result)
+            # Persist after all fork futures rejoin this caller. This keeps
+            # SQLite writes serialized on the supervisor thread.
+            for result in sorted(
+                    structured,
+                    key=lambda item: (item.block, item.strategy, item.gas_used)):
+                self.ledger.record_fork_verification(result)
 
-        return len(candidates), passed, failed
+            return len(candidates), passed, failed
+        finally:
+            self._last_verify_ms = (time.perf_counter() - started) * 1000.0
