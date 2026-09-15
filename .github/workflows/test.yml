@@ -52,6 +52,8 @@ jobs:
         with:
           python-version: '3.11'
       - name: Live batched swarm market-data replay on Arbitrum
+        env:
+          ZERO_LIVE_RPC_URL: https://arbitrum-one-rpc.publicnode.com
         run: PYTHONPATH=. python3 scripts/swarm_live_smoke.py
 
   fork-smoke:
