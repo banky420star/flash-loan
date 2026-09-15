@@ -1,4 +1,4 @@
-"""ZERO Engine CLI — shadow mode only. No wallet, no signing, ever.
+"""ZERO Engine CLI — shadow + local fork verification.
 
     python3 -m zero.cli doctor
     python3 -m zero.cli prices
@@ -6,6 +6,10 @@
     python3 -m zero.cli scan
     python3 -m zero.cli shadow [--once]
     python3 -m zero.cli ledger [--tail 20]
+    python3 -m zero.cli fork-status [--block N]
+    python3 -m zero.cli fork-command [--block N]
+    python3 -m zero.cli fork-test [--block N]
+    python3 -m zero.cli fork-ledger [--tail 20]
 """
 
 import argparse
@@ -16,6 +20,7 @@ import time
 
 from .aave import AaveV3, bucket_for
 from .engine import ShadowEngine
+from .fork_cli import build_status, command_line, run_fork_test
 from .gate import Gate
 from .keccak import selector_hex
 from .ledger import Ledger
@@ -43,6 +48,12 @@ def _engine(ledger_path: str | None = None) -> ShadowEngine:
     cfg = load_config()
     path = ledger_path or cfg.get("ledger_path", "zero_ledger.db")
     return ShadowEngine(cfg["rpc_url"], cfg, Ledger(path))
+
+
+def _fork_block(cfg: dict, requested: int | None) -> int:
+    if requested is not None:
+        return requested
+    return Rpc(cfg["rpc_url"]).block_number()
 
 
 def cmd_doctor(args):
@@ -138,9 +149,48 @@ def cmd_ledger(args):
               f"{row['reason'] or ''}")
 
 
+def cmd_fork_status(args):
+    cfg = load_config()
+    block = _fork_block(cfg, args.block)
+    status = build_status(cfg["rpc_url"], block, args.port)
+    print(json.dumps(status, indent=2))
+    return 0 if status["anvil_installed"] else 2
+
+
+def cmd_fork_command(args):
+    cfg = load_config()
+    block = _fork_block(cfg, args.block)
+    print(command_line(cfg["rpc_url"], block, args.port))
+
+
+def cmd_fork_test(args):
+    cfg = load_config()
+    block = _fork_block(cfg, args.block)
+    print(f"Fork verification only — block {block}; no mainnet writes.")
+    return run_fork_test(cfg["rpc_url"], block)
+
+
+def cmd_fork_ledger(args):
+    cfg = load_config()
+    path = args.ledger or cfg.get("ledger_path", "zero_ledger.db")
+    ledger = Ledger(path)
+    try:
+        rows = ledger.fork_tail(args.tail)
+        print(json.dumps(rows, indent=2))
+    finally:
+        ledger.close()
+
+
+def _add_fork_block_args(parser):
+    parser.add_argument("--block", type=int, default=None,
+                        help="Arbitrum block to pin; defaults to current block")
+    parser.add_argument("--port", type=int, default=8545,
+                        help="local Anvil port (status/command only)")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="zero",
-                                description="ZERO Engine shadow mode (read-only)")
+                                description="ZERO Engine shadow + local fork verification")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor").set_defaults(func=cmd_doctor)
     sub.add_parser("prices").set_defaults(func=cmd_prices)
@@ -156,6 +206,20 @@ def main(argv=None):
     lg.add_argument("--tail", type=int, default=20)
     lg.add_argument("--ledger", default=None)
     lg.set_defaults(func=cmd_ledger)
+
+    fs = sub.add_parser("fork-status", help="check local Anvil fork capability")
+    _add_fork_block_args(fs)
+    fs.set_defaults(func=cmd_fork_status)
+    fc = sub.add_parser("fork-command", help="print exact-block Anvil command")
+    _add_fork_block_args(fc)
+    fc.set_defaults(func=cmd_fork_command)
+    ft = sub.add_parser("fork-test", help="run real Aave flash-loan test on fork")
+    ft.add_argument("--block", type=int, default=None)
+    ft.set_defaults(func=cmd_fork_test)
+    fl = sub.add_parser("fork-ledger", help="show stored fork verification results")
+    fl.add_argument("--tail", type=int, default=20)
+    fl.add_argument("--ledger", default=None)
+    fl.set_defaults(func=cmd_fork_ledger)
 
     args = p.parse_args(argv)
     return args.func(args)
