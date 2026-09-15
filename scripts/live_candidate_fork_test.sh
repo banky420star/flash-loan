@@ -17,8 +17,12 @@ RPC_URL="${ARBITRUM_RPC_URL:-https://arb1.arbitrum.io/rpc}"
 : "${ZERO_STEP1_DATA:?ZERO_STEP1_DATA is required}"
 : "${ZERO_STEP2_TARGET:?ZERO_STEP2_TARGET is required}"
 : "${ZERO_STEP2_DATA:?ZERO_STEP2_DATA is required}"
+: "${ZERO_RESULT_PATH:?ZERO_RESULT_PATH is required for structured fork results}"
 
-echo "ZERO v0.4 exact candidate replay — Arbitrum block $FORK_BLOCK"
+mkdir -p "$(dirname "$ZERO_RESULT_PATH")"
+rm -f "$ZERO_RESULT_PATH"
+
+echo "ZERO v0.5.1 exact candidate replay — Arbitrum block $FORK_BLOCK"
 echo "Fork source only: $RPC_URL"
 
 forge test \

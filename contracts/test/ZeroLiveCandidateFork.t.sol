@@ -7,6 +7,9 @@ interface VmLiveCandidate {
     function envAddress(string calldata name) external view returns (address value);
     function envUint(string calldata name) external view returns (uint256 value);
     function envBytes(string calldata name) external view returns (bytes memory value);
+    function envString(string calldata name) external view returns (string memory value);
+    function toString(uint256 value) external pure returns (string memory stringifiedValue);
+    function writeFile(string calldata path, string calldata data) external;
 }
 
 interface IPoolAddressesProviderLiveCandidate {
@@ -25,6 +28,7 @@ contract ZeroLiveCandidateForkTest {
         address asset = vm.envAddress("ZERO_ASSET");
         uint256 loanAmount = vm.envUint("ZERO_LOAN_RAW");
         uint256 minProfit = vm.envUint("ZERO_MIN_PROFIT_RAW");
+        string memory resultPath = vm.envString("ZERO_RESULT_PATH");
 
         address pool = IPoolAddressesProviderLiveCandidate(AAVE_PROVIDER).getPool();
         require(pool.code.length > 0, "AAVE_POOL_MISSING");
@@ -48,7 +52,18 @@ contract ZeroLiveCandidateForkTest {
             data: vm.envBytes("ZERO_STEP2_DATA")
         });
 
+        uint256 gasBefore = gasleft();
         uint256 realized = executor.run(asset, loanAmount, minProfit, steps);
+        uint256 gasUsed = gasBefore - gasleft();
         require(realized >= minProfit, "CANDIDATE_MIN_PROFIT_NOT_REALIZED");
+
+        string memory resultJson = string.concat(
+            "{\"realized_raw\":\"",
+            vm.toString(realized),
+            "\",\"gas_used\":\"",
+            vm.toString(gasUsed),
+            "\"}"
+        );
+        vm.writeFile(resultPath, resultJson);
     }
 }
