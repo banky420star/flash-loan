@@ -86,13 +86,12 @@ Commit message: `feat: expose fork economics history`
 
 **Files:**
 - Modify: `zero/pnl.py`
-- Modify: `zero/swarm.py`
 - Modify: `config/arbitrum.json`
 - Test: `tests/test_adaptive_reserve_supervisor.py`
 
 **Interfaces:**
-- `PnlSwarmSupervisor._reserve_estimate() -> ReserveEstimate` reads config + ledger.
-- `SwarmSupervisor.run_block(..., model_reserve_usd: float | None = None)` passes one resolved value to every worker route scan.
+- `PnlSwarmSupervisor._reserve_estimate() -> ReserveEstimate` reads config + ledger on the supervisor thread.
+- `PnlSwarmSupervisor.run_block(block: int | None = None) -> dict` computes one reserve, temporarily freezes it in `swarm.model_reserve_usd`, delegates to `super().run_block(block)`, restores the prior config value, and adds reserve audit fields to the result.
 
 - [ ] **Step 1: Write failing supervisor tests**
 
@@ -104,7 +103,7 @@ Expected failure because supervisor has no reserve estimator/output fields.
 
 - [ ] **Step 3: Implement minimal wiring**
 
-Compute reserve before worker futures launch. Pass it into the existing `scan_cycle_config(... model_reserve_usd=...)`. Do not query SQLite from worker threads.
+Compute reserve before worker futures launch. Pass it into the existing `scan_cycle_config(... model_reserve_usd=...)` through the frozen supervisor configuration. Do not query SQLite from worker threads.
 
 - [ ] **Step 4: Add config**
 
@@ -125,17 +124,19 @@ Commit message: `feat: apply one learned reserve per swarm block`
 - Test: `tests/test_rpc_batch_block_tags.py`
 
 **Interfaces:**
-- Produces: `Rpc.batch_eth_call(calls: list[tuple[str, str]], block, max_batch=100) -> list[bytes]`.
+- `Rpc.batch_eth_call(calls: list[tuple[str, str]], *, block, max_batch=100) -> list[bytes]` is strict and raises on any member error.
+- `Rpc.batch_eth_call_results(calls: list[tuple[str, str]], *, block, max_batch=100) -> list[bytes | RpcError]` preserves member errors for callers that can isolate a bad row.
+- Whole-batch transport failures use configured retries/backoff while keeping the same pinned block tag.
 
 - [ ] **Step 1: Write failing tests**
 
-Assert integer block tags are encoded on every call, order is preserved, calls chunk at `max_batch`, and an RPC error raises without fallback.
+Assert integer block tags are encoded on every call, order is preserved, calls chunk at `max_batch`, transport failures retry, strict member errors raise, and no fallback block is used.
 
-- [ ] **Step 2: Run targeted tests and confirm RED**
+- [ ] **Step 2: Run targeted test and confirm RED**
 
-- [ ] **Step 3: Implement batch helper**
+- [ ] **Step 3: Implement batch helpers**
 
-Build JSON-RPC `eth_call` entries with the same `_block_tag(block)` and chunk deterministically.
+Build JSON-RPC `eth_call` entries with the same `_block_tag(block)`, chunk deterministically, preserve optional member errors, and retry only whole-request transport failures.
 
 - [ ] **Step 4: Run targeted tests and confirm GREEN**
 
@@ -146,21 +147,22 @@ Commit message: `feat: add pinned-block batched eth calls`
 ### Task 5: Batch Aave token registry
 
 **Files:**
-- Modify: `zero/swarm.py`
+- Create/Modify: `zero/swarm_batch.py`
 - Test: `tests/test_swarm_batched_registry.py`
 
 **Interfaces:**
-- `build_token_registry(..., max_batch=100)` performs reserve metadata and price reads via `Rpc.batch_eth_call`.
+- `build_token_registry_batched(engine, block: int, *, pool: str | None = None, oracle: str | None = None, max_batch: int = 100) -> dict[str, TokenInfo]` batches `symbol()`, `decimals()`, and Aave oracle price reads at one pinned block.
+- A JSON-RPC member error in one reserve's metadata discards only that reserve; discovery/state batches remain strict.
 
 - [ ] **Step 1: Write failing test**
 
-Use a fake Aave/RPC transport and assert reserve list is fetched once, metadata/price reads are batched at one block, malformed token rows are skipped, and no latest-block read occurs.
+Use a fake Aave/RPC transport and assert reserve list is fetched once, metadata/price reads are batched at one block, malformed or member-error token rows are skipped, and no latest-block read occurs.
 
 - [ ] **Step 2: Confirm RED**
 
 - [ ] **Step 3: Implement batched registry parser**
 
-Encode `symbol()`, `decimals()`, and `getAssetPrice(address)` using existing encoding helpers/selectors.
+Encode `symbol()`, `decimals()`, and `getAssetPrice(address)` using existing encoding helpers/selectors and use tolerant member results only for this registry layer.
 
 - [ ] **Step 4: Confirm GREEN + regression suite**
 
@@ -171,11 +173,11 @@ Commit message: `perf: batch pinned Aave token metadata`
 ### Task 6: Batch Uniswap pool discovery
 
 **Files:**
-- Modify: `zero/swarm.py`
+- Modify: `zero/swarm_batch.py`
 - Test: `tests/test_swarm_batched_discovery.py`
 
 **Interfaces:**
-- `discover_uniswap_routes(..., max_batch=100)` sends configured fee-tier factory lookups in one or more pinned batches.
+- `discover_uniswap_routes_batched(engine, pair: tuple[str, str], registry: dict[str, TokenInfo], block: int, fee_tiers: list[int], *, max_batch: int = 100) -> list[dict]` sends configured fee-tier factory lookups in one or more strict pinned batches.
 
 - [ ] **Step 1: Write failing test**
 
@@ -196,11 +198,11 @@ Commit message: `perf: batch pinned Uniswap pool discovery`
 ### Task 7: Batch unique pool state
 
 **Files:**
-- Modify: `zero/swarm.py`
+- Modify: `zero/swarm_batch.py`
 - Test: `tests/test_swarm_batched_context.py`
 
 **Interfaces:**
-- `build_scan_context(..., max_batch=100)` batches `slot0()` and `liquidity()` for unique pools and creates the same `ScanContext` shape.
+- `build_scan_context_batched(engine, block: int, route_catalog: list[dict], *, tokens: dict[str, TokenInfo] | None = None, aave_pool: str | None = None, oracle: str | None = None, max_batch: int = 100) -> ScanContext` batches unique `slot0()` and `liquidity()` reads and rejects mixed-block catalogs before any RPC request.
 
 - [ ] **Step 1: Write failing test**
 
@@ -218,25 +220,26 @@ Decode slot0 first word as `sqrtPriceX96` and liquidity first word as `liquidity
 
 Commit message: `perf: batch pinned Uniswap pool state`
 
-### Task 8: Timing instrumentation and CLI output
+### Task 8: Production wiring and timing instrumentation
 
 **Files:**
-- Modify: `zero/swarm.py`
-- Modify: `zero/cli.py`
+- Modify: `zero/pnl.py`
+- Modify: `config/arbitrum.json`
 - Test: `tests/test_swarm_timings.py`
 
 **Interfaces:**
+- `PnlSwarmSupervisor._build_catalog(block, workers)` uses the three batched helpers and configured `swarm.max_rpc_batch`.
 - Cycle output adds `catalog_ms`, `scan_ms`, `verify_ms` without removing existing fields.
 
 - [ ] **Step 1: Write failing tests**
 
-Assert timing fields exist, are non-negative, and continuous CLI formatting still includes worker/route/fork counters.
+Assert the production supervisor calls the batched helpers, timing fields exist and are non-negative, and existing worker/route/fork counters remain unchanged.
 
 - [ ] **Step 2: Confirm RED**
 
-- [ ] **Step 3: Implement monotonic timing boundaries**
+- [ ] **Step 3: Implement monotonic timing boundaries and production batch wiring**
 
-Measure catalog/context, worker scan, and fork verification separately using `time.perf_counter()`.
+Measure catalog/context, worker scan, and fork verification separately using `time.perf_counter()` while keeping the scheduler and leases unchanged.
 
 - [ ] **Step 4: Confirm GREEN**
 
@@ -244,12 +247,13 @@ Run targeted tests and full `bash scripts/cli_test.sh`.
 
 - [ ] **Step 5: Commit**
 
-Commit message: `feat: expose swarm phase timings`
+Commit message: `feat: use batched market data and expose swarm timings`
 
 ### Task 9: Integration verification
 
 **Files:**
-- Modify docs only if command/output examples changed materially.
+- Add: `scripts/swarm_live_smoke.py`
+- Modify: `.github/workflows/test.yml`
 
 - [ ] **Step 1: Run full Python/CLI suite**
 
@@ -261,16 +265,20 @@ Expected: all tests PASS and CLI smoke PASS.
 Run: `forge build`
 Expected: compile success; existing simulation-executor lint warnings may remain.
 
-- [ ] **Step 3: Run Aave fork smoke**
+- [ ] **Step 3: Run live batched swarm market-data smoke**
+
+Run a PR-only live Arbitrum read smoke with fork execution disabled. Expected: 20 workers, zero worker failures, real route scanning, and non-negative timing fields.
+
+- [ ] **Step 4: Run Aave fork smoke**
 
 Run: `bash scripts/fork_test.sh`
 Expected: flash loan callback and repayment PASS.
 
-- [ ] **Step 4: Run deterministic candidate fork smoke**
+- [ ] **Step 5: Run deterministic candidate fork smoke**
 
 Run: `bash scripts/candidate_fork_test.sh`
 Expected: Aave + Uniswap candidate replay PASS.
 
-- [ ] **Step 5: Open PR and require exact-head CI success**
+- [ ] **Step 6: Open PR and require exact-head CI success**
 
-Do not merge until unit/CLI, Foundry build, Aave fork smoke, and candidate fork smoke are all green on the same head SHA.
+Do not merge until unit/CLI, Foundry build, live swarm market-data smoke, Aave fork smoke, and candidate fork smoke are all green on the same head SHA.
