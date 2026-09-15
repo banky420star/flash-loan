@@ -4,6 +4,7 @@ HARD INVARIANT: this module has no signer, no private key, and no code path
 that broadcasts a transaction. Its output is the SQLite ledger and stdout.
 """
 
+from decimal import Decimal, ROUND_FLOOR
 import math
 import time
 
@@ -13,6 +14,7 @@ from .rpc import Rpc
 from .strategies.arbitrage import Cycle, best_opportunity, sweep_sizes
 from .strategies.liquidation import gate_liquidations, scan_watchlist
 from .swarm import ScanContext, swarm_expected_net
+from .uniswap_quoter import QUOTER_V2_ARBITRUM, UniswapV3Quoter
 
 
 class ShadowEngine:
@@ -21,6 +23,8 @@ class ShadowEngine:
         self.config = config
         self.ledger = ledger
         self.aave = AaveV3(self.rpc, config["aave_provider"])
+        self.quoter = UniswapV3Quoter(
+            self.rpc, config.get("uniswap_v3_quoter_v2", QUOTER_V2_ARBITRUM))
         self.gas_limit = config.get("gas_limit", 2_000_000)
         self.gas_price_gwei = config.get("gas_price_gwei", 0.1)
 
@@ -74,6 +78,67 @@ class ShadowEngine:
             predicted_net=predicted_net,
             min_profit=min_profit,
         )
+
+    def _exact_swarm_preflight(self, *, block: int, cycle_config: dict,
+                               best: dict, base_price_usd: float,
+                               premium_bps: int, gas_usd: float,
+                               model_reserve_usd: float) -> dict:
+        """Re-quote one locally positive route through QuoterV2 at `block`."""
+        base_decimals = int(cycle_config["base_decimals"])
+        quote_decimals = int(cycle_config["quote_decimals"])
+        base_scale = Decimal(10) ** base_decimals
+        loan_raw = int(
+            (Decimal(str(best["size"])) * base_scale).to_integral_value(
+                rounding=ROUND_FLOOR))
+        if loan_raw <= 0:
+            raise ValueError("exact preflight loan amount must be positive")
+
+        pools = cycle_config["pools"]
+        base = cycle_config["base"]
+        quote = cycle_config["quote"]
+        hop1 = self.quoter.quote_exact_input_single(
+            token_in=base,
+            token_out=quote,
+            fee=int(pools[0]["fee_tier"]),
+            amount_in=loan_raw,
+            block=block,
+        )
+        hop2 = self.quoter.quote_exact_input_single(
+            token_in=quote,
+            token_out=base,
+            fee=int(pools[1]["fee_tier"]),
+            amount_in=int(hop1.amount_out),
+            block=block,
+        )
+
+        loan_base = loan_raw / (10 ** base_decimals)
+        hop1_out = int(hop1.amount_out) / (10 ** quote_decimals)
+        hop2_out = int(hop2.amount_out) / (10 ** base_decimals)
+        gross_base = hop2_out - loan_base
+        gross_usd = gross_base * base_price_usd
+        flash_fee_raw = (loan_raw * premium_bps + 5_000) // 10_000
+        flash_fee_base = flash_fee_raw / (10 ** base_decimals)
+        flash_fee_usd = flash_fee_base * base_price_usd
+        expected_net_usd = swarm_expected_net(
+            gross_usd, flash_fee_usd, gas_usd, model_reserve_usd)
+
+        out = dict(best)
+        out.update({
+            "size": loan_base,
+            "hop1_out": hop1_out,
+            "hop2_out": hop2_out,
+            "gross": gross_base,
+            "gross_usd": gross_usd,
+            "flash_fee_base": flash_fee_base,
+            "flash_fee_usd": flash_fee_usd,
+            "expected_net_usd": expected_net_usd,
+            "initialized_ticks_crossed": (
+                int(hop1.initialized_ticks_crossed)
+                + int(hop2.initialized_ticks_crossed)
+            ),
+            "quoter_gas_estimate": int(hop1.gas_estimate) + int(hop2.gas_estimate),
+        })
+        return out
 
     def scan_cycle_config(self, block: int, cycle_config: dict, *,
                           sizes: list[float] | None = None,
@@ -156,9 +221,31 @@ class ShadowEngine:
                 })
                 evaluated.append(item)
             best = max(evaluated, key=lambda item: item["expected_net_usd"])
+            local_expected_net_usd = float(best["expected_net_usd"])
+            quote_source = "local_single_range"
+
+            if (local_expected_net_usd > 0
+                    and self.config.get("swarm", {}).get(
+                        "exact_quoter_preflight", False)):
+                best = self._exact_swarm_preflight(
+                    block=block,
+                    cycle_config=cycle_config,
+                    best=best,
+                    base_price_usd=base_price_usd,
+                    premium_bps=premium_bps,
+                    gas_usd=gas_usd,
+                    model_reserve_usd=float(model_reserve_usd),
+                )
+                quote_source = "quoter_v2"
+
             expected_net_usd = float(best["expected_net_usd"])
             decision = "PASS" if expected_net_usd > 0 else "REJECT"
-            reason = "ok" if decision == "PASS" else "expected_net_usd <= 0"
+            if decision == "PASS":
+                reason = "ok"
+            elif quote_source == "quoter_v2" and local_expected_net_usd > 0:
+                reason = "exact_quoter_net_usd <= 0"
+            else:
+                reason = "expected_net_usd <= 0"
 
             one_raw = 1 / (10 ** int(cycle_config["base_decimals"]))
             min_profit_base = (
@@ -186,6 +273,8 @@ class ShadowEngine:
                 "gross_usd": best["gross_usd"],
                 "net": expected_net_usd,
                 "expected_net_usd": expected_net_usd,
+                "local_expected_net_usd": local_expected_net_usd,
+                "quote_source": quote_source,
                 "decision": decision,
                 "reason": reason,
                 "flash_premium_bps": premium_bps,
