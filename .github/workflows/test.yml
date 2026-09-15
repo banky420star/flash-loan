@@ -40,6 +40,20 @@ jobs:
       - name: Compile simulation executor
         run: forge build
 
+  swarm-marketdata-smoke:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Live batched swarm market-data replay on Arbitrum
+        run: python3 scripts/swarm_live_smoke.py
+
   fork-smoke:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
