@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .keccak import selector_hex
-from .rpc import decode_uints, encode_address, encode_uint
+from .rpc import RpcError, decode_uints, encode_address, encode_uint
 from .swarm import RouteKey, ScanContext, TokenInfo, _pool_config
 
 
@@ -32,7 +32,7 @@ def build_token_registry_batched(engine, block: int, *,
                                  pool: str | None = None,
                                  oracle: str | None = None,
                                  max_batch: int = 100) -> dict[str, TokenInfo]:
-    """Resolve Aave reserve metadata/prices in bounded calls at one block."""
+    """Resolve reserve metadata while isolating per-token member errors."""
     block = int(block)
     pool = pool or engine.aave.pool_address(block=block)
     oracle = oracle or engine.aave.oracle_address(block=block)
@@ -50,14 +50,21 @@ def build_token_registry_batched(engine, block: int, *,
             (oracle, price_selector + encode_address(token)[2:]),
         ])
 
-    replies = engine.rpc.batch_eth_call(
-        calls, block=block, max_batch=max_batch)
+    tolerant = getattr(engine.rpc, "batch_eth_call_results", None)
+    if tolerant is None:
+        replies = engine.rpc.batch_eth_call(
+            calls, block=block, max_batch=max_batch)
+    else:
+        replies = tolerant(calls, block=block, max_batch=max_batch)
     if len(replies) != len(calls):
         raise ValueError("incomplete batched token metadata reply")
 
     registry: dict[str, TokenInfo] = {}
     for index, token in enumerate(reserves):
-        raw_symbol, raw_decimals, raw_price = replies[index * 3:index * 3 + 3]
+        triple = replies[index * 3:index * 3 + 3]
+        if any(isinstance(value, RpcError) for value in triple):
+            continue
+        raw_symbol, raw_decimals, raw_price = triple
         try:
             symbol = _decode_symbol(raw_symbol)
             decimals = int(_decode_uint(raw_decimals))
