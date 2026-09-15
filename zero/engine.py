@@ -25,10 +25,19 @@ class ShadowEngine:
         eth = self.gas_limit * self.gas_price_gwei / 1e9
         return eth * eth_price
 
+    @staticmethod
+    def flash_economics(*, gross: float, loan_size: float,
+                        premium_bps: int, gas_usd: float) -> dict:
+        flash_fee = loan_size * premium_bps / 10_000
+        return {"flash_fee": flash_fee,
+                "net": gross - gas_usd - flash_fee}
+
     def scan_arbitrage(self, block: int) -> dict:
         """Sweep every configured cycle; gate the best size per cycle."""
         cfg = self.config["arbitrage"]
         oracle = self.aave.oracle_address()
+        pool_address = self.aave.pool_address()
+        premium_bps = self.aave.flashloan_premium_total(pool_address)
         eth_price = self.aave.asset_price(oracle, cfg["eth_for_gas"])
         gas_usd = self._gas_cost_usd(eth_price)
         sizes = sweep_sizes(cfg["min_size"], cfg["max_size"])
@@ -46,7 +55,14 @@ class ShadowEngine:
                 continue
             results["detected"] += 1
             gross = best["gross"]
-            net = gross - gas_usd
+            economics = self.flash_economics(
+                gross=gross,
+                loan_size=best["size"],
+                premium_bps=premium_bps,
+                gas_usd=gas_usd,
+            )
+            flash_fee = economics["flash_fee"]
+            net = economics["net"]
             decision, reason, min_profit = self.config["_gate"].evaluate(
                 net, gross, gas_usd, best["size"])
             self.ledger.record(
@@ -54,7 +70,11 @@ class ShadowEngine:
                 asset=cyc_cfg["base"], loan_size=best["size"], gross=gross,
                 net=net, min_profit=min_profit, reason=reason,
                 detail={"tokens": [p.token0 for p in pools] + [pools[0].token1],
-                        "gas_usd": gas_usd})
+                        "gas_usd": gas_usd,
+                        "flash_premium_bps": premium_bps,
+                        "flash_fee": flash_fee,
+                        "hop1_out": best["hop1_out"],
+                        "hop2_out": best["hop2_out"]})
             if decision == "PASS":
                 results["passed"] += 1
             else:
@@ -62,7 +82,9 @@ class ShadowEngine:
             results["cycles"].append({
                 "name": cyc_cfg.get("name", "?"), "size": best["size"],
                 "gross": gross, "net": net, "decision": decision,
-                "reason": reason})
+                "reason": reason, "flash_premium_bps": premium_bps,
+                "flash_fee": flash_fee, "hop1_out": best["hop1_out"],
+                "hop2_out": best["hop2_out"], "min_profit": min_profit})
         return results
 
     def scan_liquidations(self, block: int) -> dict:
