@@ -65,20 +65,36 @@ class Rpc:
         return resp["result"]
 
     def batch(self, calls: list) -> list:
-        """calls: [(method, params), ...] -> [result, ...] preserving order."""
+        """calls: [(method, params), ...] -> [result, ...] preserving order.
+
+        Transport failures use the same bounded retry/backoff policy as scalar
+        JSON-RPC requests. JSON-RPC application errors still fail immediately.
+        """
         payload = []
         for i, (method, params) in enumerate(calls):
             payload.append({"jsonrpc": "2.0", "id": i,
                             "method": method, "params": params})
-        raw = self.transport.post(json.dumps(payload).encode())
-        results = {r["id"]: r for r in json.loads(raw)}
-        out = []
-        for i in range(len(calls)):
-            r = results[i]
-            if "error" in r:
-                raise RpcError(f"RPC error: {r['error']}")
-            out.append(r["result"])
-        return out
+
+        last_err = None
+        for attempt in range(self.retries):
+            try:
+                raw = self.transport.post(json.dumps(payload).encode())
+                decoded = json.loads(raw)
+                results = {r["id"]: r for r in decoded}
+                out = []
+                for i in range(len(calls)):
+                    r = results[i]
+                    if "error" in r:
+                        raise RpcError(f"RPC error: {r['error']}")
+                    out.append(r["result"])
+                return out
+            except RpcError:
+                raise
+            except Exception as exc:
+                last_err = exc
+                time.sleep(0.3 * (attempt + 1))
+        raise RpcError(
+            f"rpc batch unreachable after {self.retries} attempts: {last_err}")
 
     def batch_eth_call(self, calls: list[tuple[str, str]], *,
                        block: int | str = "latest",
