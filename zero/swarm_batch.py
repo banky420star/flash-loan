@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .keccak import selector_hex
 from .rpc import decode_uints, encode_address, encode_uint
-from .swarm import RouteKey, TokenInfo, _pool_config
+from .swarm import RouteKey, ScanContext, TokenInfo, _pool_config
 
 
 def _decode_uint(raw: bytes) -> int:
@@ -149,3 +149,81 @@ def discover_uniswap_routes_batched(engine, pair: tuple[str, str],
                 "pools": [pool_a, pool_b],
             })
     return routes
+
+
+def build_scan_context_batched(engine, block: int,
+                               route_catalog: list[dict], *,
+                               tokens: dict[str, TokenInfo] | None = None,
+                               aave_pool: str | None = None,
+                               oracle: str | None = None,
+                               max_batch: int = 100) -> ScanContext:
+    """Freeze Aave + deduplicated V3 pool state using pinned batches."""
+    block = int(block)
+    for route in route_catalog:
+        if int(route.get("block", block)) != block:
+            raise ValueError("mixed-block scan context")
+
+    aave_pool = aave_pool or engine.aave.pool_address(block=block)
+    oracle = oracle or engine.aave.oracle_address(block=block)
+    premium_bps = int(engine.aave.flashloan_premium_total(
+        aave_pool, block=block))
+    if tokens is None:
+        tokens = build_token_registry_batched(
+            engine, block, pool=aave_pool, oracle=oracle,
+            max_batch=max_batch)
+
+    eth_asset = str(engine.config["arbitrage"]["eth_for_gas"]).lower()
+    eth_info = next(
+        (token for token in tokens.values()
+         if token.address.lower() == eth_asset),
+        None,
+    )
+    if eth_info is not None:
+        eth_price_usd = float(eth_info.price_usd)
+    else:
+        # Same pinned block fallback only; never read latest inside a cycle.
+        eth_price_usd = float(engine.aave.asset_price(
+            oracle, eth_asset, block=block))
+    gas_usd = float(engine._gas_cost_usd(eth_price_usd))
+
+    pool_addresses: list[str] = []
+    seen: set[str] = set()
+    for route in route_catalog:
+        for pool_cfg in route.get("pools", []):
+            address = str(pool_cfg.get("address", "")).lower()
+            if not address or address in seen:
+                continue
+            seen.add(address)
+            pool_addresses.append(address)
+
+    slot0_selector = selector_hex("slot0()")
+    liquidity_selector = selector_hex("liquidity()")
+    calls: list[tuple[str, str]] = []
+    for address in pool_addresses:
+        calls.extend([
+            (address, slot0_selector),
+            (address, liquidity_selector),
+        ])
+    replies = engine.rpc.batch_eth_call(
+        calls, block=block, max_batch=max_batch)
+    if len(replies) != len(calls):
+        raise ValueError("incomplete batched pool state reply")
+
+    pool_states: dict[str, dict] = {}
+    for index, address in enumerate(pool_addresses):
+        raw_slot0, raw_liquidity = replies[index * 2:index * 2 + 2]
+        pool_states[address] = {
+            "sqrtPriceX96": _decode_uint(raw_slot0),
+            "liquidity": _decode_uint(raw_liquidity),
+        }
+
+    return ScanContext(
+        block=block,
+        aave_pool=aave_pool,
+        oracle=oracle,
+        premium_bps=premium_bps,
+        eth_price_usd=eth_price_usd,
+        gas_usd=gas_usd,
+        tokens=tokens,
+        pool_states=pool_states,
+    )
