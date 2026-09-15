@@ -6,7 +6,7 @@ import unittest
 from zero.candidate import ArbitrageCandidate
 from zero.fork import ForkResult
 from zero.ledger import Ledger
-from zero.swarm import SwarmSupervisor
+from zero.pnl import PnlSwarmSupervisor
 
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "arbitrum.json")
@@ -90,7 +90,7 @@ class TestSupervisorForkPersistence(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Ledger(os.path.join(tmp, "ledger.db"))
-            supervisor = SwarmSupervisor(
+            supervisor = PnlSwarmSupervisor(
                 FakeEngine(), cfg, ledger, verifier=verifier,
                 worker_runner=runner,
                 catalog_builder=lambda block, workers: ([], object()),
