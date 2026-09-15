@@ -1,7 +1,7 @@
 """SQLite audit ledger: every candidate, traded or not, lands here.
 
 Shadow mode's whole point is the evidence this table accumulates — detection
-counts, gate rejections, and (later) simulation outcomes vs predictions.
+counts, gate rejections, and simulation outcomes vs predictions.
 """
 
 import json
@@ -22,6 +22,19 @@ CREATE TABLE IF NOT EXISTS opportunities (
     min_profit REAL,
     decision TEXT NOT NULL,
     reason TEXT,
+    detail TEXT,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS fork_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    block INTEGER NOT NULL,
+    strategy TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    gas_used INTEGER NOT NULL,
+    predicted_net REAL NOT NULL,
+    realized_net REAL NOT NULL,
+    model_error REAL NOT NULL,
     detail TEXT,
     created_at TEXT
 );
@@ -57,6 +70,30 @@ class Ledger:
              time.strftime("%Y-%m-%d %H:%M:%S")))
         self.conn.commit()
         return cur.lastrowid
+
+    def record_fork_verification(self, result) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO fork_verifications "
+            "(ts, block, strategy, success, gas_used, predicted_net, "
+            "realized_net, model_error, detail, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (time.time(), result.block, result.strategy, int(result.success),
+             result.gas_used, result.predicted_net, result.realized_net,
+             result.model_error, result.detail,
+             time.strftime("%Y-%m-%d %H:%M:%S")))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def fork_tail(self, n: int = 20) -> list:
+        rows = self.conn.execute(
+            "SELECT block, strategy, success, gas_used, predicted_net, "
+            "realized_net, model_error, detail, created_at "
+            "FROM fork_verifications ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        return [{
+            "block": r[0], "strategy": r[1], "success": bool(r[2]),
+            "gas_used": r[3], "predicted_net": r[4], "realized_net": r[5],
+            "model_error": r[6], "detail": r[7], "created_at": r[8],
+        } for r in rows]
 
     def record_cycle(self, *, block: int, detected: int, passed: int,
                      rejected: int, note: str | None = None) -> int:
