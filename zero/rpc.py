@@ -64,12 +64,8 @@ class Rpc:
                               "method": method, "params": params})
         return resp["result"]
 
-    def batch(self, calls: list) -> list:
-        """calls: [(method, params), ...] -> [result, ...] preserving order.
-
-        Transport failures use the same bounded retry/backoff policy as scalar
-        JSON-RPC requests. JSON-RPC application errors still fail immediately.
-        """
+    def _batch_results(self, calls: list) -> list:
+        """Return ordered batch results while preserving per-member RPC errors."""
         payload = []
         for i, (method, params) in enumerate(calls):
             payload.append({"jsonrpc": "2.0", "id": i,
@@ -83,44 +79,63 @@ class Rpc:
                 results = {r["id"]: r for r in decoded}
                 out = []
                 for i in range(len(calls)):
-                    r = results[i]
-                    if "error" in r:
-                        raise RpcError(f"RPC error: {r['error']}")
-                    out.append(r["result"])
+                    reply = results[i]
+                    if "error" in reply:
+                        out.append(RpcError(f"RPC error: {reply['error']}"))
+                    else:
+                        out.append(reply["result"])
                 return out
-            except RpcError:
-                raise
             except Exception as exc:
+                # Per-member JSON-RPC errors are data in `out`; only transport,
+                # decoding, or malformed-response failures reach this block.
                 last_err = exc
                 time.sleep(0.3 * (attempt + 1))
         raise RpcError(
             f"rpc batch unreachable after {self.retries} attempts: {last_err}")
 
-    def batch_eth_call(self, calls: list[tuple[str, str]], *,
-                       block: int | str = "latest",
-                       max_batch: int = 100) -> list[bytes]:
-        """Run ordered eth_call requests in bounded batches at one block tag.
+    def batch(self, calls: list) -> list:
+        """Return ordered results; fail immediately on any RPC member error."""
+        results = self._batch_results(calls)
+        for result in results:
+            if isinstance(result, RpcError):
+                raise result
+        return results
 
-        There is intentionally no per-call fallback. If any batch member fails,
-        the entire helper raises so a pinned-block scan cannot silently mix
-        state from another block.
-        """
+    def batch_eth_call_results(self, calls: list[tuple[str, str]], *,
+                               block: int | str = "latest",
+                               max_batch: int = 100) -> list[bytes | RpcError]:
+        """Run pinned eth_call batches while preserving member-level errors."""
         max_batch = int(max_batch)
         if max_batch <= 0:
             raise ValueError("max_batch must be positive")
         tag = _block_tag(block)
-        out: list[bytes] = []
+        out: list[bytes | RpcError] = []
         for start in range(0, len(calls), max_batch):
             chunk = calls[start:start + max_batch]
-            raw_results = self.batch([
+            raw_results = self._batch_results([
                 ("eth_call", [{"to": to, "data": data}, tag])
                 for to, data in chunk
             ])
             for raw in raw_results:
-                if raw == "0x" or raw is None:
+                if isinstance(raw, RpcError):
+                    out.append(raw)
+                elif raw == "0x" or raw is None:
                     out.append(b"")
                 else:
                     out.append(bytes.fromhex(raw[2:]))
+        return out
+
+    def batch_eth_call(self, calls: list[tuple[str, str]], *,
+                       block: int | str = "latest",
+                       max_batch: int = 100) -> list[bytes]:
+        """Run ordered pinned eth_calls and fail on any member-level error."""
+        results = self.batch_eth_call_results(
+            calls, block=block, max_batch=max_batch)
+        out: list[bytes] = []
+        for result in results:
+            if isinstance(result, RpcError):
+                raise result
+            out.append(result)
         return out
 
     # convenience wrappers -------------------------------------------------
