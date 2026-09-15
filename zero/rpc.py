@@ -80,6 +80,33 @@ class Rpc:
             out.append(r["result"])
         return out
 
+    def batch_eth_call(self, calls: list[tuple[str, str]], *,
+                       block: int | str = "latest",
+                       max_batch: int = 100) -> list[bytes]:
+        """Run ordered eth_call requests in bounded batches at one block tag.
+
+        There is intentionally no per-call fallback. If any batch member fails,
+        the entire helper raises so a pinned-block scan cannot silently mix
+        state from another block.
+        """
+        max_batch = int(max_batch)
+        if max_batch <= 0:
+            raise ValueError("max_batch must be positive")
+        tag = _block_tag(block)
+        out: list[bytes] = []
+        for start in range(0, len(calls), max_batch):
+            chunk = calls[start:start + max_batch]
+            raw_results = self.batch([
+                ("eth_call", [{"to": to, "data": data}, tag])
+                for to, data in chunk
+            ])
+            for raw in raw_results:
+                if raw == "0x" or raw is None:
+                    out.append(b"")
+                else:
+                    out.append(bytes.fromhex(raw[2:]))
+        return out
+
     # convenience wrappers -------------------------------------------------
     def chain_id(self) -> int:
         return int(self.call("eth_chainId", []), 16)
