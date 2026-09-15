@@ -19,6 +19,7 @@ class FakeSupervisor:
             "fork_verifications_attempted": 1,
             "fork_verifications_passed": 1,
             "fork_verifications_failed": 0,
+            "elapsed_s": 0.25,
             "candidates": [],
         }])
         self.calls = 0
