@@ -28,9 +28,9 @@ class UniswapV3Pool:
         self.decimals0 = decimals0
         self.decimals1 = decimals1
 
-    def fetch_state(self) -> dict:
-        slot0 = self.rpc.eth_call(self.address, _sel("slot0()"))
-        liq = self.rpc.eth_call(self.address, _sel("liquidity()"))
+    def fetch_state(self, block: int | str = "latest") -> dict:
+        slot0 = self.rpc.eth_call(self.address, _sel("slot0()"), block=block)
+        liq = self.rpc.eth_call(self.address, _sel("liquidity()"), block=block)
         words = decode_uints(slot0) if slot0 else []
         return {
             "sqrtPriceX96": words[0] if words else 0,
@@ -63,18 +63,13 @@ class UniswapV3Pool:
         price_before = Fraction(n, two96)
 
         if direction == "0to1":
-            # token0 in: x_res = l*2^96/n grows -> sqrtP falls.
-            # 1/n_new = 1/n + amt_units/(l*2^96)
             amt_units = amt_in * (10 ** decimals_in)
             one_over_new = Fraction(1) / n + amt_units / (l * two96)
             n_new = Fraction(1) / one_over_new
-            # y_out = l * (sqrtP_old - sqrtP_new), in token1 units
             out_units = l * (price_before - n_new / two96)
         elif direction == "1to0":
-            # token1 in: y_res grows -> sqrtP rises.
             amt_units = amt_in * (10 ** decimals_in)
             n_new = n + amt_units * two96 / l
-            # x_out = l * (1/sqrtP_old - 1/sqrtP_new), in token0 units
             out_units = l * (two96 / n - two96 / n_new)
         else:
             raise ValueError(f"bad direction: {direction}")
