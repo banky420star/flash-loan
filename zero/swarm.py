@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
 import threading
 import time
 
+from .calldata import build_uniswap_v3_steps
+from .candidate import ArbitrageCandidate
 from .keccak import keccak256, selector_hex
 from .rpc import encode_address, encode_uint
 
@@ -546,6 +548,56 @@ class SwarmSupervisor:
                 detail=error,
             )
 
+    def _fork_payload(self, candidate: SwarmCandidate) -> dict:
+        payload = candidate.payload or {}
+        raw_candidate = payload.get("candidate")
+        if not isinstance(raw_candidate, dict):
+            raise ValueError("swarm candidate payload is missing executable candidate")
+        names = {field.name for field in fields(ArbitrageCandidate)}
+        normalized = ArbitrageCandidate(**{
+            name: raw_candidate[name] for name in names
+        })
+        execution = self.config["arbitrage"]["execution"]
+        steps = build_uniswap_v3_steps(
+            normalized,
+            execution["swap_router_02"],
+            slippage_bps=int(execution.get("slippage_bps", 20)),
+        )
+        return {
+            "candidate": normalized.as_dict(),
+            "steps": [step.as_dict() for step in steps],
+        }
+
+    def _verify_candidates(self, candidates: list[SwarmCandidate]) -> tuple[int, int, int]:
+        if (self.verifier is None
+                or not self.config["swarm"].get("verify_positive_candidates", True)
+                or not candidates):
+            return 0, 0, 0
+
+        max_workers = max(1, min(
+            len(candidates),
+            int(self.config["swarm"].get("max_fork_concurrency", 1)),
+        ))
+
+        def verify_one(candidate: SwarmCandidate) -> bool:
+            try:
+                return int(self.verifier(self._fork_payload(candidate))) == 0
+            except Exception:
+                return False
+
+        passed = 0
+        failed = 0
+        with ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="zero-fork") as executor:
+            futures = [executor.submit(verify_one, candidate)
+                       for candidate in candidates]
+            for future in as_completed(futures):
+                if future.result():
+                    passed += 1
+                else:
+                    failed += 1
+        return len(candidates), passed, failed
+
     def run_block(self, block: int | None = None) -> dict:
         started = time.time()
         scan_block = int(block if block is not None else self.engine.rpc.block_number())
@@ -608,6 +660,7 @@ class SwarmSupervisor:
             if not book.add(candidate):
                 duplicates += 1
         ranked = book.ranked()
+        attempted, verified, verification_failed = self._verify_candidates(ranked)
         self.leases.expire_before(scan_block + 1)
         return {
             "block": scan_block,
@@ -618,9 +671,9 @@ class SwarmSupervisor:
             "positive_net": len(ranked),
             "duplicates_suppressed": duplicates,
             "best_expected_net": ranked[0].expected_net if ranked else None,
-            "fork_verifications_attempted": 0,
-            "fork_verifications_passed": 0,
-            "fork_verifications_failed": 0,
+            "fork_verifications_attempted": attempted,
+            "fork_verifications_passed": verified,
+            "fork_verifications_failed": verification_failed,
             "elapsed_s": time.time() - started,
             "candidates": [candidate.as_dict() for candidate in ranked],
         }
