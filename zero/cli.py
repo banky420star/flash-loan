@@ -28,12 +28,18 @@ from .aave import AaveV3, bucket_for
 from .calldata import build_uniswap_v3_steps
 from .candidate import ArbitrageCandidate
 from .engine import ShadowEngine
-from .fork_cli import build_status, command_line, run_fork_test, run_live_candidate_fork
+from .fork_cli import (
+    build_status,
+    command_line,
+    run_fork_test,
+    run_live_candidate_fork,
+    run_live_candidate_fork_result,
+)
 from .gate import Gate
 from .keccak import selector_hex
 from .ledger import Ledger
+from .pnl import PnlSwarmSupervisor
 from .rpc import Rpc, encode_address, encode_uint, to_checksum
-from .swarm import SwarmSupervisor
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config",
                            "arbitrum.json")
@@ -59,16 +65,16 @@ def _engine(ledger_path: str | None = None) -> ShadowEngine:
     return ShadowEngine(cfg["rpc_url"], cfg, Ledger(path))
 
 
-def _swarm_supervisor(ledger_path: str | None = None) -> SwarmSupervisor:
+def _swarm_supervisor(ledger_path: str | None = None) -> PnlSwarmSupervisor:
     cfg = load_config()
     path = ledger_path or cfg.get("ledger_path", "zero_ledger.db")
     ledger = Ledger(path)
     engine = ShadowEngine(cfg["rpc_url"], cfg, ledger)
 
-    def verifier(payload: dict) -> int:
-        return run_live_candidate_fork(cfg["rpc_url"], payload)
+    def verifier(payload: dict):
+        return run_live_candidate_fork_result(cfg["rpc_url"], payload)
 
-    return SwarmSupervisor(engine, cfg, ledger, verifier=verifier)
+    return PnlSwarmSupervisor(engine, cfg, ledger, verifier=verifier)
 
 
 def _fork_block(cfg: dict, requested: int | None) -> int:
