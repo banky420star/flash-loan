@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      fork_block:
+        description: 'Optional Arbitrum block for deterministic fork smoke'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -21,3 +26,33 @@ jobs:
           python-version: '3.11'
       - name: Run ZERO tests
         run: bash scripts/cli_test.sh
+
+  foundry-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Compile simulation executor
+        run: forge build
+
+  fork-smoke:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Real Aave flash-loan replay on Arbitrum fork
+        env:
+          ARBITRUM_RPC_URL: https://arb1.arbitrum.io/rpc
+          FORK_BLOCK: ${{ inputs.fork_block }}
+        run: bash scripts/fork_test.sh
