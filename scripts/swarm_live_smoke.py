@@ -13,6 +13,9 @@ from zero.pnl import PnlSwarmSupervisor
 
 def main() -> int:
     cfg = load_config()
+    rpc_override = os.environ.get("ZERO_LIVE_RPC_URL")
+    if rpc_override:
+        cfg["rpc_url"] = rpc_override
     # This smoke validates live catalog/context/scanning only. Fork execution is
     # covered by the dedicated Aave and candidate-fork jobs.
     cfg["swarm"]["verify_positive_candidates"] = False
