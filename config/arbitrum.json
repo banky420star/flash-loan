@@ -55,6 +55,61 @@
       }
     ]
   },
+  "swarm": {
+    "enabled": true,
+    "worker_count": 20,
+    "manager_count": 4,
+    "max_rpc_concurrency": 20,
+    "model_reserve_usd": 0.0,
+    "size_ladder_usd": [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000],
+    "fee_tiers": [100, 500, 3000, 10000],
+    "work_stealing": true,
+    "block_driven": true,
+    "verify_positive_candidates": true,
+    "max_fork_concurrency": 1,
+    "managers": [
+      {
+        "id": "ALPHA",
+        "workers": [
+          {"id": "A1", "pair": ["USDC", "WETH"], "role": "core-stable-eth"},
+          {"id": "A2", "pair": ["USDt0", "WETH"], "role": "core-stable-eth"},
+          {"id": "A3", "pair": ["DAI", "WETH"], "role": "core-stable-eth"},
+          {"id": "A4", "pair": ["USDC.e", "WETH"], "role": "core-stable-eth"},
+          {"id": "A5", "pair": ["USDC", "WETH"], "role": "stable-eth-overflow"}
+        ]
+      },
+      {
+        "id": "BRAVO",
+        "workers": [
+          {"id": "B1", "pair": ["WBTC", "WETH"], "role": "btc-route"},
+          {"id": "B2", "pair": ["WBTC", "USDC"], "role": "btc-route"},
+          {"id": "B3", "pair": ["tBTC", "WETH"], "role": "btc-route"},
+          {"id": "B4", "pair": ["tBTC", "USDC"], "role": "btc-route"},
+          {"id": "B5", "pair": ["WBTC", "WETH"], "role": "btc-overflow"}
+        ]
+      },
+      {
+        "id": "CHARLIE",
+        "workers": [
+          {"id": "C1", "pair": ["wstETH", "WETH"], "role": "lst-route"},
+          {"id": "C2", "pair": ["rETH", "WETH"], "role": "lst-route"},
+          {"id": "C3", "pair": ["weETH", "WETH"], "role": "lrt-route"},
+          {"id": "C4", "pair": ["ezETH", "WETH"], "role": "lrt-route"},
+          {"id": "C5", "pair": ["rsETH", "WETH"], "role": "lrt-overflow"}
+        ]
+      },
+      {
+        "id": "DELTA",
+        "workers": [
+          {"id": "D1", "pair": ["ARB", "WETH"], "role": "dynamic-route"},
+          {"id": "D2", "pair": ["LINK", "WETH"], "role": "dynamic-route"},
+          {"id": "D3", "pair": ["AAVE", "WETH"], "role": "dynamic-route"},
+          {"id": "D4", "pair": ["GHO", "USDC"], "role": "dynamic-route"},
+          {"id": "D5", "pair": ["ARB", "WETH"], "role": "dynamic-overflow"}
+        ]
+      }
+    ]
+  },
   "liquidation": {
     "bonus": 0.05,
     "eth_for_gas": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
