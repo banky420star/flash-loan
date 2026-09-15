@@ -4,9 +4,9 @@
 
 **Goal:** Replace ZERO's single narrow sequential scan with one CEO supervisor coordinating four managers and 20 concurrent route-scanning workers, all reading a single pinned Arbitrum block and admitting any candidate whose modeled net profit remains positive after costs and reserve.
 
-**Architecture:** Add block-tagged RPC/state reads, an isolated swarm module for route identity/leasing/opportunity aggregation, configuration-driven manager/worker assignments, and a supervisor that runs bounded concurrent workers against the existing two-pool Uniswap V3 scanner. Keep execution fork-only and reuse the v0.4 candidate/calldata bridge.
+**Architecture:** Add block-tagged RPC/state reads, configuration-driven market topology, dynamic Uniswap V3 route discovery, canonical route leasing, one per-block scan context/cache, a shared opportunity book, bounded concurrent workers, and CEO-owned serialized ledger/fork verification. Keep execution fork-only and reuse the v0.4 two-pool candidate/calldata bridge.
 
-**Tech Stack:** Python 3 standard library (`concurrent.futures`, `threading`, `dataclasses`), SQLite ledger, JSON-RPC over HTTP, existing Uniswap V3 math, Foundry regression tests.
+**Tech Stack:** Python 3 standard library (`concurrent.futures`, `threading`, `dataclasses`, `decimal`), SQLite ledger, JSON-RPC over HTTP, existing Uniswap V3 math, Foundry regression tests.
 
 **Spec:** `docs/superpowers/specs/2026-09-15-v05-swarm-market-division-design.md`
 
@@ -14,17 +14,19 @@
 
 - This slice remains shadow/fork-verification only; no production mainnet signer or broadcaster.
 - Exactly 20 scanner workers and four managers are created from configuration by default.
-- Every candidate in one scan cycle must derive from the same explicit pinned block.
+- Every candidate in one scan cycle must derive from one explicit pinned Arbitrum block.
 - Canonical route leases prevent two workers from scanning the same route for the same block.
-- `expected_net_profit > 0` is the admission rule in swarm mode; the existing `$2` floor, `4x gas`, and percentage ROI gate must not reject tiny positive-net shadow/fork candidates.
-- Swap fees and modeled price impact remain embedded in round-trip quote output and must not be double-counted.
+- `expected_net_profit > 0` is the swarm admission rule; the existing `$2` floor, `4x gas`, and percentage ROI gate must not reject tiny positive-net shadow/fork candidates.
+- Swap fees and modeled price impact are already embedded in round-trip quote output and must not be double-counted.
 - RPC concurrency is bounded and configurable.
 - Worker exceptions are isolated and recorded; one worker failure must not abort the cycle.
-- Existing v0.4 fork executor and calldata path remain simulation-only.
+- Workers never write SQLite directly; the CEO serializes all ledger writes after worker results return.
+- Existing `ZeroForkExecutor` and calldata path remain simulation-only.
+- v0.5 swarm execution remains two-pool Uniswap V3 only; multi-DEX and multi-hop are subsequent slices.
 
 ---
 
-### Task 1: Add explicit block-tagged RPC and pool state reads
+### Task 1: Add explicit block-tagged RPC and state reads
 
 **Files:**
 - Modify: `zero/rpc.py`
@@ -36,7 +38,7 @@
 - Produces: `Rpc.eth_call(to: str, data: str, block: int | str = "latest") -> bytes`
 - Produces: `Rpc.get_code(address: str, block: int | str = "latest") -> str`
 - Produces: `UniswapV3Pool.fetch_state(block: int | str = "latest") -> dict`
-- Aave read methods that use `eth_call` accept and propagate an optional `block` argument where required by the swarm scanner.
+- Aave read methods used by swarm accept/propagate an optional `block` argument.
 
 - [ ] **Step 1: Write failing block-tag tests**
 
@@ -47,17 +49,15 @@ rpc.eth_call("0x" + "11" * 20, "0x1234", block=123)
 assert captured["params"][1] == "0x7b"
 ```
 
-Also assert `block="latest"` remains backward compatible and `UniswapV3Pool.fetch_state(block=123)` sends both `slot0()` and `liquidity()` reads with the same tag.
+Also assert `block="latest"` remains backward compatible and `UniswapV3Pool.fetch_state(block=123)` sends both `slot0()` and `liquidity()` reads with `0x7b`.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
-
-Run:
+- [ ] **Step 2: Run focused tests and verify RED**
 
 ```bash
 python3 -m unittest tests.test_rpc_block_tags -v
 ```
 
-Expected: FAIL because `eth_call`, `get_code`, and `fetch_state` do not yet accept a block argument.
+Expected: FAIL because current wrappers always use `latest`.
 
 - [ ] **Step 3: Implement one block-tag normalizer**
 
@@ -78,18 +78,18 @@ def _block_tag(block: int | str) -> str:
 
 Use it in `eth_call` and `get_code`.
 
-- [ ] **Step 4: Propagate the block through Uniswap/Aave read paths used by the scanner**
+- [ ] **Step 4: Propagate the block through Uniswap and Aave scanner reads**
 
-Change `UniswapV3Pool.fetch_state()` to call:
+Change `UniswapV3Pool.fetch_state()` to:
 
 ```python
 slot0 = self.rpc.eth_call(self.address, _sel("slot0()"), block=block)
 liq = self.rpc.eth_call(self.address, _sel("liquidity()"), block=block)
 ```
 
-Update Aave scanner reads so pool/oracle/premium/price calls can be pinned to the same block without breaking existing callers.
+Update Aave pool/oracle/premium/price/reserve reads used by the swarm so a caller can pin them to the same block.
 
-- [ ] **Step 5: Run focused and existing RPC/Aave/Uniswap tests**
+- [ ] **Step 5: Run focused plus legacy read tests**
 
 ```bash
 python3 -m unittest tests.test_rpc_block_tags tests.test_rpc_aave tests.test_uniswap -v
@@ -121,7 +121,7 @@ git commit -m "feat: pin ZERO state reads to explicit blocks"
 
 - [ ] **Step 1: Write failing canonicalization and lease tests**
 
-Assert addresses are lower-cased before hashing/serialization, fee/direction differences produce different IDs, and:
+Assert addresses are lower-cased before identity construction, fee/direction differences produce different IDs, and:
 
 ```python
 assert leases.claim(100, route.id, "A1") is True
@@ -129,7 +129,7 @@ assert leases.claim(100, route.id, "A2") is False
 assert leases.claim(101, route.id, "A2") is True
 ```
 
-- [ ] **Step 2: Run test and verify RED**
+- [ ] **Step 2: Verify RED**
 
 ```bash
 python3 -m unittest tests.test_swarm_routes -v
@@ -137,11 +137,9 @@ python3 -m unittest tests.test_swarm_routes -v
 
 - [ ] **Step 3: Implement `RouteKey` and `RouteLeaseRegistry`**
 
-Use `@dataclass(frozen=True)` for `RouteKey`; construct `id` from a stable pipe-delimited canonical representation hashed with existing `keccak256`.
+Use `@dataclass(frozen=True)` for `RouteKey`. Create the ID from a stable pipe-delimited canonical string hashed with the repository's existing `keccak256`. Protect the lease dictionary with `threading.Lock`.
 
-Use a `threading.Lock` around a dictionary keyed by `(block, route_id)` for leases. Reject release attempts by non-owners with `ValueError` rather than silently corrupting ownership.
-
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Run tests**
 
 ```bash
 python3 -m unittest tests.test_swarm_routes -v
@@ -158,31 +156,31 @@ git commit -m "feat: add canonical swarm route leasing"
 
 ---
 
-### Task 3: Add the shared opportunity book and positive-net swarm economics
+### Task 3: Add swarm economics, opportunity book, and configuration
 
 **Files:**
 - Modify: `zero/swarm.py`
-- Test: `tests/test_swarm_opportunity_book.py`
 - Modify: `config/arbitrum.json`
+- Test: `tests/test_swarm_opportunity_book.py`
 
 **Interfaces:**
-- Produces: `SwarmCandidate` dataclass with candidate/route/worker/manager IDs, block, economics, timestamp, and optional v0.4 candidate payload.
+- Produces: `SwarmCandidate` with candidate/route/worker/manager IDs, block, economics, timestamp, and optional v0.4 candidate payload.
 - Produces: `OpportunityBook.add(candidate: SwarmCandidate) -> bool`
 - Produces: `OpportunityBook.ranked() -> list[SwarmCandidate]`
 - Produces: `swarm_expected_net(gross: float, flash_fee: float, gas: float, model_reserve: float) -> float`
 
 - [ ] **Step 1: Write failing economics/book tests**
 
-Cover these exact boundaries:
+Cover exact boundaries:
 
 ```python
 assert swarm_expected_net(1.00, 0.40, 0.50, 0.09) == 0.01
 assert swarm_expected_net(1.00, 0.40, 0.50, 0.10) == 0.0
 ```
 
-Assert the book accepts the first candidate for a `(block, route_id)` identity, suppresses duplicates, and ranks primarily by `expected_net` descending.
+Assert one candidate per `(block, route_id)` is retained and ranking is expected-net descending.
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 2: Verify RED**
 
 ```bash
 python3 -m unittest tests.test_swarm_opportunity_book -v
@@ -190,9 +188,7 @@ python3 -m unittest tests.test_swarm_opportunity_book -v
 
 - [ ] **Step 3: Implement economics and book**
 
-Use `Decimal(str(value))` for the four-term net subtraction to avoid a tiny positive result becoming negative from binary float noise, then convert to float for existing serialization.
-
-Admission rule in `OpportunityBook.add`:
+Use `Decimal(str(value))` for the four-term subtraction. Admission rule:
 
 ```python
 if candidate.expected_net <= 0:
@@ -201,21 +197,27 @@ if candidate.expected_net <= 0:
 
 - [ ] **Step 4: Add swarm configuration**
 
-Add a `swarm` object to `config/arbitrum.json` with:
+Add:
 
 ```json
 {
-  "enabled": true,
-  "worker_count": 20,
-  "manager_count": 4,
-  "max_rpc_concurrency": 20,
-  "model_reserve_usd": 0.0,
-  "work_stealing": true,
-  "block_driven": true
+  "swarm": {
+    "enabled": true,
+    "worker_count": 20,
+    "manager_count": 4,
+    "max_rpc_concurrency": 20,
+    "model_reserve_usd": 0.0,
+    "size_ladder_usd": [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000],
+    "fee_tiers": [100, 500, 3000, 10000],
+    "work_stealing": true,
+    "block_driven": true,
+    "verify_positive_candidates": true,
+    "max_fork_concurrency": 1
+  }
 }
 ```
 
-Add default manager/worker IDs and primary pair assignments from the approved spec as configuration data, not hard-coded branching logic.
+Add manager/worker IDs and primary symbol pairs from the approved spec as configuration data, not branching logic.
 
 - [ ] **Step 5: Run tests**
 
@@ -229,154 +231,117 @@ Expected: PASS.
 
 ```bash
 git add zero/swarm.py config/arbitrum.json tests/test_swarm_opportunity_book.py
-git commit -m "feat: add swarm opportunity book and positive-net gate"
+git commit -m "feat: add swarm opportunity book and positive-net economics"
 ```
 
 ---
 
-### Task 4: Create four managers and 20 configuration-driven worker definitions
+### Task 4: Build configuration-driven topology, pinned token registry, and Uniswap route catalog
 
 **Files:**
 - Modify: `zero/swarm.py`
 - Test: `tests/test_swarm_topology.py`
+- Test: `tests/test_swarm_discovery.py`
 
 **Interfaces:**
 - Produces: `WorkerSpec(worker_id: str, manager_id: str, primary_pair: tuple[str, str], role: str)`
 - Produces: `ManagerSpec(manager_id: str, worker_ids: tuple[str, ...])`
 - Produces: `build_topology(config: dict) -> tuple[list[ManagerSpec], list[WorkerSpec]]`
+- Produces: `TokenInfo(symbol: str, address: str, decimals: int, price_usd: float)`
+- Produces: `build_token_registry(aave, block: int) -> dict[str, TokenInfo]`
+- Produces: `discover_uniswap_routes(engine, pair: tuple[str, str], registry, block: int, fee_tiers: list[int]) -> list[dict]`
 
 - [ ] **Step 1: Write failing topology tests**
 
-Assert exactly four unique managers and 20 unique workers are built from the shipped config; every manager owns five primary workers; no worker belongs to two managers; the IDs include A1-A5, B1-B5, C1-C5, D1-D5.
+Assert exactly four managers and 20 unique workers are built; every manager owns five; IDs include A1-A5, B1-B5, C1-C5, D1-D5.
 
-- [ ] **Step 2: Verify RED**
+- [ ] **Step 2: Write failing token/route discovery tests**
+
+Use fake Aave reserve metadata for `USDC`, `WETH`, `WBTC`, `tBTC`, `wstETH`, `rETH`, `weETH`, `ezETH`, `rsETH`, `ARB`, `LINK`, `AAVE`, and `GHO` so worker assignments resolve by symbol without hard-coded token business logic.
+
+Mock Uniswap factory `getPool` at fee tiers `[100, 500, 3000, 10000]`; return zero address for missing pools. Assert only existing pools are retained, all factory calls use the pinned block, and every two-distinct-pool ordering yields a valid two-hop route candidate.
+
+- [ ] **Step 3: Verify RED**
 
 ```bash
-python3 -m unittest tests.test_swarm_topology -v
+python3 -m unittest tests.test_swarm_topology tests.test_swarm_discovery -v
 ```
 
-- [ ] **Step 3: Implement topology parsing and validation**
+- [ ] **Step 4: Implement topology validation**
 
-Reject configs where `worker_count`/`manager_count` disagree with actual definitions, worker IDs are duplicated, or a manager references a missing worker.
+Reject duplicate workers, missing manager references, or declared counts that disagree with the actual configuration.
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 5: Implement token registry from pinned Aave reserves**
+
+Resolve symbols/decimals/prices once per block. Do not let each worker rediscover the same metadata independently.
+
+- [ ] **Step 6: Implement fee-tier pool discovery and route generation**
+
+For each configured pair, query the existing Uniswap V3 factory at the pinned block, discard the zero address, and build ordered distinct-pool route pairs. Preserve base/quote decimals in each route config so the existing `Cycle` math can be reused.
+
+- [ ] **Step 7: Run tests**
 
 ```bash
-python3 -m unittest tests.test_swarm_topology -v
+python3 -m unittest tests.test_swarm_topology tests.test_swarm_discovery -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add zero/swarm.py tests/test_swarm_topology.py
-git commit -m "feat: configure ZERO CEO manager worker topology"
+git add zero/swarm.py tests/test_swarm_topology.py tests/test_swarm_discovery.py
+git commit -m "feat: discover ZERO swarm token and route catalog"
 ```
 
 ---
 
-### Task 5: Refactor the existing arbitrage scan into a pinned-block route scanner
+### Task 5: Add one immutable per-block scan context and pinned route scanner
 
 **Files:**
 - Modify: `zero/engine.py`
 - Modify: `zero/swarm.py`
+- Test: `tests/test_swarm_scan_context.py`
 - Test: `tests/test_swarm_scanner.py`
 - Preserve: `tests/test_candidate_engine.py`, `tests/test_v04_engine_economics.py`
 
 **Interfaces:**
-- Produces: `ShadowEngine.scan_cycle_config(block: int, cycle_config: dict, *, swarm_mode: bool = False, model_reserve_usd: float = 0.0) -> dict | None`
-- Existing `scan_arbitrage(block)` remains available and uses the helper for backward compatibility.
-- Swarm workers invoke the helper with `swarm_mode=True`.
+- Produces: `ScanContext(block, aave_pool, oracle, premium_bps, eth_price_usd, gas_usd, tokens, pool_states)`
+- Produces: `build_scan_context(engine, block: int, route_catalog: list[dict]) -> ScanContext`
+- Produces: `ShadowEngine.scan_cycle_config(block: int, cycle_config: dict, *, sizes: list[float] | None = None, swarm_mode: bool = False, model_reserve_usd: float = 0.0, context: ScanContext | None = None) -> dict | None`
 
-- [ ] **Step 1: Write failing tests for exact-block propagation and tiny-positive admission**
+- [ ] **Step 1: Write failing context tests**
 
-Use fakes for RPC/pools and assert every state call receives the same supplied block. Build a candidate with modeled net `0.001` after flash fee/gas/reserve and assert swarm mode admits it while `expected_net <= 0` is rejected.
+Assert Aave pool/oracle/premium/gas inputs and every pool state are captured once at the same block. Assert a context for block `N` cannot be used to scan a route declared for block `N+1`.
 
-- [ ] **Step 2: Verify RED**
+- [ ] **Step 2: Write failing tiny-positive and sizing tests**
 
-```bash
-python3 -m unittest tests.test_swarm_scanner -v
-```
-
-- [ ] **Step 3: Extract one-cycle scanning from `scan_arbitrage`**
-
-Move the per-cycle body into `scan_cycle_config` without changing v0.4 default semantics. In swarm mode, calculate:
+Use `size_ladder_usd` and token oracle price to convert USD notionals into base-token amounts:
 
 ```python
-expected_net = swarm_expected_net(
-    gross=best["gross"],
-    flash_fee=flash_fee,
-    gas=gas_usd,
-    model_reserve=model_reserve_usd,
-)
+base_amount = usd_size / base_price_usd
 ```
 
-and require `expected_net > 0` instead of calling the legacy Gate minimum-profit thresholds.
+Assert the scanner chooses the amount with highest expected net, not highest loan size. Assert modeled net `0.001` is admitted in swarm mode while zero/negative net is rejected.
 
-- [ ] **Step 4: Ensure pool/Aave/oracle reads are pinned to `block`**
-
-Use the interfaces from Task 1 for pool state, pool resolution/premium, and oracle price reads used by this scan.
-
-- [ ] **Step 5: Run focused plus v0.4 regression tests**
+- [ ] **Step 3: Verify RED**
 
 ```bash
-python3 -m unittest tests.test_swarm_scanner tests.test_candidate_engine tests.test_v04_engine_economics -v
+python3 -m unittest tests.test_swarm_scan_context tests.test_swarm_scanner -v
 ```
 
-Expected: PASS.
+- [ ] **Step 4: Extract one-cycle scanning from legacy `scan_arbitrage`**
 
-- [ ] **Step 6: Commit**
+Keep existing v0.4 behavior as default. In swarm mode use the supplied context and `swarm_expected_net` instead of the legacy Gate floor.
 
-```bash
-git add zero/engine.py zero/swarm.py tests/test_swarm_scanner.py
-git commit -m "refactor: expose pinned-block swarm route scanning"
-```
+- [ ] **Step 5: Enforce context block equality**
 
----
+Raise `ValueError("mixed-block scan context")` if candidate/route/context block identities disagree.
 
-### Task 6: Implement CEO supervisor, manager scheduling, work stealing, and failure isolation
-
-**Files:**
-- Modify: `zero/swarm.py`
-- Test: `tests/test_swarm_supervisor.py`
-
-**Interfaces:**
-- Produces: `SwarmSupervisor(engine, config, ledger)`
-- Produces: `SwarmSupervisor.run_block(block: int | None = None) -> dict`
-- Produces result keys: `block`, `active_workers`, `routes_scanned`, `worker_failures`, `detected`, `positive_net`, `duplicates_suppressed`, `best_expected_net`, `elapsed_s`, `candidates`.
-
-- [ ] **Step 1: Write failing concurrency/failure tests**
-
-Use an injected worker callable so tests do not hit the network. Assert:
-- 20 worker tasks are submitted;
-- max concurrent executions never exceeds configured `max_rpc_concurrency`;
-- one worker raising `RuntimeError("boom")` increments `worker_failures` but other results survive;
-- duplicate route leases are suppressed;
-- an idle worker may receive a route from another manager's overflow queue when `work_stealing=true`.
-
-- [ ] **Step 2: Verify RED**
+- [ ] **Step 6: Run focused and v0.4 regressions**
 
 ```bash
-python3 -m unittest tests.test_swarm_supervisor -v
-```
-
-- [ ] **Step 3: Implement bounded concurrency**
-
-Use `ThreadPoolExecutor(max_workers=max_rpc_concurrency)` and route leases before submission. Keep manager/worker objects lightweight and configuration-driven.
-
-- [ ] **Step 4: Implement work stealing as route-queue leasing, not worker mutation**
-
-When a worker exhausts its primary queue, it asks the supervisor for the next unleased overflow route. Ownership lasts only for the current block.
-
-- [ ] **Step 5: Return deterministic observability metrics**
-
-Sort output candidates by expected net descending before serialization so repeated tests are stable regardless of thread completion order.
-
-- [ ] **Step 6: Run tests**
-
-```bash
-python3 -m unittest tests.test_swarm_supervisor -v
+python3 -m unittest tests.test_swarm_scan_context tests.test_swarm_scanner tests.test_candidate_engine tests.test_v04_engine_economics -v
 ```
 
 Expected: PASS.
@@ -384,13 +349,115 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add zero/swarm.py tests/test_swarm_supervisor.py
-git commit -m "feat: add ZERO swarm supervisor and work stealing"
+git add zero/engine.py zero/swarm.py tests/test_swarm_scan_context.py tests/test_swarm_scanner.py
+git commit -m "refactor: add pinned-block swarm scan context"
 ```
 
 ---
 
-### Task 7: Add swarm CLI commands without changing legacy commands
+### Task 6: Implement CEO supervisor, managers, work stealing, and serialized ledger writes
+
+**Files:**
+- Modify: `zero/swarm.py`
+- Test: `tests/test_swarm_supervisor.py`
+- Test: `tests/test_swarm_ledger.py`
+
+**Interfaces:**
+- Produces: `SwarmSupervisor(engine, config, ledger, verifier=None)`
+- Produces: `SwarmSupervisor.run_block(block: int | None = None) -> dict`
+- Result keys: `block`, `active_workers`, `routes_scanned`, `worker_failures`, `detected`, `positive_net`, `duplicates_suppressed`, `best_expected_net`, `fork_verifications_attempted`, `fork_verifications_passed`, `fork_verifications_failed`, `elapsed_s`, `candidates`.
+
+- [ ] **Step 1: Write failing concurrency/failure tests**
+
+Inject a worker callable so tests avoid network access. Assert 20 worker tasks are created, max in-flight work respects `max_rpc_concurrency`, one worker throwing `RuntimeError("boom")` does not abort other results, duplicate routes are suppressed, and an idle worker can lease overflow work when work stealing is enabled.
+
+- [ ] **Step 2: Write failing serialized-ledger test**
+
+Use a fake ledger that records the current thread name on every `record()` call. Assert worker callables never invoke the ledger and all ledger writes happen after future collection on the supervisor thread.
+
+- [ ] **Step 3: Verify RED**
+
+```bash
+python3 -m unittest tests.test_swarm_supervisor tests.test_swarm_ledger -v
+```
+
+- [ ] **Step 4: Implement bounded worker concurrency**
+
+Use `ThreadPoolExecutor(max_workers=max_rpc_concurrency)`. Acquire route lease before submission and release/expire it deterministically at block completion.
+
+- [ ] **Step 5: Implement work stealing as route-queue leasing**
+
+Primary queues are assigned first. When exhausted, a worker requests the next unleased overflow route; manager identity remains the worker's configured manager, while route ownership is the lease.
+
+- [ ] **Step 6: Aggregate deterministically and serialize ledger writes**
+
+Sort worker results by route ID before ledger persistence and expected net descending for opportunity output. Record worker errors as CEO-owned ledger/detail events; never use one SQLite connection concurrently across worker threads.
+
+- [ ] **Step 7: Run tests**
+
+```bash
+python3 -m unittest tests.test_swarm_supervisor tests.test_swarm_ledger -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add zero/swarm.py tests/test_swarm_supervisor.py tests/test_swarm_ledger.py
+git commit -m "feat: add ZERO CEO manager worker scheduler"
+```
+
+---
+
+### Task 7: Dispatch positive candidates to the existing exact-block fork verifier and expose metrics
+
+**Files:**
+- Modify: `zero/swarm.py`
+- Modify: `zero/cli.py`
+- Test: `tests/test_swarm_verifier.py`
+
+**Interfaces:**
+- Consumes existing: `build_candidate_calldata(result: dict, cfg: dict) -> dict | None`
+- Consumes existing: `run_live_candidate_fork(upstream_rpc: str, payload: dict) -> int`
+- Produces supervisor verifier hook: `verifier(candidate_payload: dict) -> int`
+
+- [ ] **Step 1: Write failing verifier tests**
+
+Inject a fake verifier returning `0`, `1`, and raising an exception. Assert only `expected_net > 0` candidates are submitted; duplicate `(block, route_id)` candidates are submitted once; attempted/passed/failed counters are correct; verifier failure does not kill the scan result.
+
+- [ ] **Step 2: Verify RED**
+
+```bash
+python3 -m unittest tests.test_swarm_verifier -v
+```
+
+- [ ] **Step 3: Add a bounded verifier phase after worker aggregation**
+
+Build v0.4 calldata only for compatible two-pool candidates. Run exact-block fork verification with `max_fork_concurrency` from config; default `1` because Foundry fork runs are resource-heavy.
+
+- [ ] **Step 4: Do not parse realized P&L in this slice**
+
+Record only verifier exit status plus candidate metadata. Structured realized P&L is the immediately following v0.5.1 subsystem and must not be faked from predicted values.
+
+- [ ] **Step 5: Run tests**
+
+```bash
+python3 -m unittest tests.test_swarm_verifier -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add zero/swarm.py zero/cli.py tests/test_swarm_verifier.py
+git commit -m "feat: fork-verify positive ZERO swarm candidates"
+```
+
+---
+
+### Task 8: Add swarm CLI commands and observability
 
 **Files:**
 - Modify: `zero/cli.py`
@@ -400,11 +467,11 @@ git commit -m "feat: add ZERO swarm supervisor and work stealing"
 **Interfaces:**
 - Produces CLI: `python3 -m zero.cli swarm-once`
 - Produces CLI: `python3 -m zero.cli swarm --interval SECONDS`
-- Legacy `scan`, `candidate`, `calldata`, `fork-arb`, and `shadow` remain unchanged.
+- Legacy `scan`, `candidate`, `calldata`, `fork-arb`, and `shadow` remain available.
 
 - [ ] **Step 1: Write failing CLI tests**
 
-Patch the supervisor and assert `swarm-once` emits JSON containing all observability keys; assert continuous `swarm` uses the configured supervisor and handles `KeyboardInterrupt` cleanly.
+Patch the supervisor and assert `swarm-once` emits JSON containing pinned block, active workers, routes scanned, failures, detected/positive counts, duplicate suppression, best expected net, fork counters, and elapsed time.
 
 - [ ] **Step 2: Verify RED**
 
@@ -412,15 +479,15 @@ Patch the supervisor and assert `swarm-once` emits JSON containing all observabi
 python3 -m unittest tests.test_swarm_cli -v
 ```
 
-- [ ] **Step 3: Add supervisor factory and commands**
+- [ ] **Step 3: Add supervisor construction and commands**
 
-Use the existing config/ledger construction paths. Do not add signer, wallet, or broadcast options.
+Use existing config/ledger paths. `swarm` loops until interrupted; `swarm-once` runs exactly one pinned block. Neither command exposes signer, wallet, or mainnet broadcast options.
 
-- [ ] **Step 4: Document commands and safety boundary**
+- [ ] **Step 4: Document the runtime and safety boundary**
 
-README must state that swarm mode is live-read + local fork-verification infrastructure only, not a mainnet transaction executor.
+README must state that the swarm is live-read + local exact-block fork verification only.
 
-- [ ] **Step 5: Run CLI tests and smoke help**
+- [ ] **Step 5: Run CLI tests and help smoke**
 
 ```bash
 python3 -m unittest tests.test_swarm_cli -v
@@ -438,11 +505,11 @@ git commit -m "feat: expose ZERO 20-worker swarm CLI"
 
 ---
 
-### Task 8: Full regression, fork verification, and merge-readiness evidence
+### Task 9: Full regression, fork verification, and merge-readiness evidence
 
 **Files:**
-- Modify if needed: `.github/workflows/test.yml`
-- No production behavior changes in this task unless a failing test identifies a regression.
+- Modify if required: `.github/workflows/test.yml`
+- No production behavior changes unless verification finds a regression.
 
 **Interfaces:**
 - Produces merge evidence only.
@@ -453,7 +520,7 @@ git commit -m "feat: expose ZERO 20-worker swarm CLI"
 bash scripts/cli_test.sh
 ```
 
-Expected: all legacy tests plus new swarm tests PASS.
+Expected: all legacy and new swarm tests PASS.
 
 - [ ] **Step 2: Build Solidity**
 
@@ -461,7 +528,7 @@ Expected: all legacy tests plus new swarm tests PASS.
 forge build
 ```
 
-Expected: build success. Existing lints may remain warnings; no compilation errors.
+Expected: build success; existing lints may remain warnings but no compile errors.
 
 - [ ] **Step 3: Run real Aave fork smoke**
 
@@ -479,19 +546,19 @@ bash scripts/candidate_fork_test.sh
 
 Expected: `testCandidateRouteRepaysAndProfitsOnRealPools()` PASS.
 
-- [ ] **Step 5: Run one live swarm scan**
+- [ ] **Step 5: Run one live swarm cycle**
 
 ```bash
 python3 -m zero.cli swarm-once
 ```
 
-Expected: valid JSON with `active_workers: 20`; zero candidates is acceptable, but mixed-block state or unhandled worker errors are not.
+Expected: valid output with `active_workers: 20`; zero positive candidates is acceptable. Mixed-block data, unhandled worker errors, duplicate route ownership, or SQLite thread errors are not.
 
-- [ ] **Step 6: Ensure CI includes the new Python test suite**
+- [ ] **Step 6: Ensure CI executes the new Python suite**
 
-If `.github/workflows/test.yml` already runs `scripts/cli_test.sh`, no workflow change is needed. Otherwise add the same command used locally.
+If `.github/workflows/test.yml` already calls `scripts/cli_test.sh`, leave it unchanged. Otherwise add that exact command.
 
-- [ ] **Step 7: Final commit if CI/readme changes were necessary**
+- [ ] **Step 7: Commit any verification-only adjustments**
 
 ```bash
 git add .github/workflows/test.yml README.md
@@ -506,4 +573,4 @@ PR title:
 ZERO Engine v0.5: 20-worker pinned-block swarm foundation
 ```
 
-PR body must include the exact test/fork commands and observed PASS results. Do not merge until required checks are green.
+PR body must list the exact Python/Foundry/fork commands and observed results. Do not merge until required checks are green.
