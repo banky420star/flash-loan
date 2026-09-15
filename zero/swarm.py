@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 import threading
+import time
 
 from .keccak import keccak256, selector_hex
 from .rpc import encode_address, encode_uint
@@ -340,3 +343,284 @@ def build_scan_context(engine, block: int,
         tokens=tokens,
         pool_states=pool_states,
     )
+
+
+class WorkAllocator:
+    """Thread-safe primary route queues with cross-manager work stealing."""
+
+    def __init__(self, workers: list[WorkerSpec], routes: list[dict], *,
+                 block: int | None = None,
+                 leases: RouteLeaseRegistry | None = None):
+        self.workers = {worker.worker_id: worker for worker in workers}
+        self._primary = {worker.worker_id: deque() for worker in workers}
+        self._overflow = deque()
+        self.block = block
+        self.leases = leases
+        self._lock = threading.Lock()
+
+        pair_workers: dict[tuple[str, str], list[str]] = {}
+        for worker in workers:
+            pair_workers.setdefault(worker.primary_pair, []).append(worker.worker_id)
+        pair_index: dict[tuple[str, str], int] = {}
+        for route in routes:
+            pair = (str(route.get("base_symbol", "")),
+                    str(route.get("quote_symbol", "")))
+            owners = pair_workers.get(pair, [])
+            if not owners:
+                self._overflow.append(route)
+                continue
+            index = pair_index.get(pair, 0)
+            worker_id = owners[index % len(owners)]
+            pair_index[pair] = index + 1
+            self._primary[worker_id].append(route)
+
+    def next_route(self, worker_id: str, *, allow_steal: bool = True) -> dict | None:
+        with self._lock:
+            own = self._primary.get(worker_id)
+            if own is None:
+                raise ValueError(f"unknown worker: {worker_id}")
+            if own:
+                return own.popleft()
+            if not allow_steal:
+                return None
+            if self._overflow:
+                return self._overflow.popleft()
+            donors = sorted(
+                ((len(queue), wid) for wid, queue in self._primary.items()
+                 if wid != worker_id and queue),
+                key=lambda item: (-item[0], item[1]),
+            )
+            if not donors:
+                return None
+            return self._primary[donors[0][1]].popleft()
+
+    def claim(self, worker_id: str, route: dict) -> bool:
+        if self.leases is None or self.block is None:
+            return True
+        return self.leases.claim(
+            self.block, str(route["route_id"]), worker_id)
+
+
+class SwarmSupervisor:
+    """CEO: one pinned-block cycle across four managers and 20 workers."""
+
+    def __init__(self, engine, config: dict, ledger, verifier=None, *,
+                 worker_runner=None, catalog_builder=None):
+        self.engine = engine
+        self.config = config
+        self.ledger = ledger
+        self.verifier = verifier
+        self.managers, self.workers = build_topology(config)
+        self.worker_runner = worker_runner or self._run_worker
+        self.catalog_builder = catalog_builder or self._build_catalog
+        self.leases = RouteLeaseRegistry()
+
+    def _build_catalog(self, block: int,
+                       workers: list[WorkerSpec]) -> tuple[list[dict], ScanContext]:
+        registry = build_token_registry(self.engine.aave, block)
+        fee_tiers = [int(v) for v in self.config["swarm"].get(
+            "fee_tiers", [100, 500, 3000, 10000])]
+        routes: list[dict] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for worker in workers:
+            if worker.primary_pair in seen_pairs:
+                continue
+            seen_pairs.add(worker.primary_pair)
+            routes.extend(discover_uniswap_routes(
+                self.engine, worker.primary_pair, registry, block, fee_tiers))
+        context = build_scan_context(self.engine, block, routes)
+        return routes, context
+
+    def _run_worker(self, worker: WorkerSpec, allocator: WorkAllocator,
+                    context: ScanContext) -> dict:
+        rows: list[dict] = []
+        scanned = 0
+        duplicates = 0
+        route_errors: list[dict] = []
+        allow_steal = bool(self.config["swarm"].get("work_stealing", True))
+        reserve = float(self.config["swarm"].get("model_reserve_usd", 0.0))
+        while True:
+            route = allocator.next_route(worker.worker_id, allow_steal=allow_steal)
+            if route is None:
+                break
+            if not allocator.claim(worker.worker_id, route):
+                duplicates += 1
+                continue
+            scanned += 1
+            try:
+                row = self.engine.scan_cycle_config(
+                    context.block,
+                    route,
+                    swarm_mode=True,
+                    model_reserve_usd=reserve,
+                    context=context,
+                )
+                if row is None:
+                    continue
+                row = dict(row)
+                row["worker_id"] = worker.worker_id
+                row["manager_id"] = worker.manager_id
+                row["route_id"] = route["route_id"]
+                row["route"] = route
+                rows.append(row)
+            except Exception as exc:
+                route_errors.append({
+                    "worker_id": worker.worker_id,
+                    "manager_id": worker.manager_id,
+                    "route_id": route.get("route_id"),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "rows": rows,
+            "routes_scanned": scanned,
+            "duplicates_suppressed": duplicates,
+            "route_errors": route_errors,
+        }
+
+    @staticmethod
+    def _dedupe_routes(routes: list[dict]) -> tuple[list[dict], int]:
+        seen: set[str] = set()
+        unique: list[dict] = []
+        duplicates = 0
+        for route in routes:
+            route_id = str(route.get("route_id", ""))
+            if route_id and route_id in seen:
+                duplicates += 1
+                continue
+            if route_id:
+                seen.add(route_id)
+            unique.append(route)
+        return unique, duplicates
+
+    @staticmethod
+    def _candidate_from_row(row: dict) -> SwarmCandidate | None:
+        expected = float(row.get("expected_net_usd", 0.0))
+        candidate = row.get("candidate")
+        route_id = str(row.get("route_id", ""))
+        if expected <= 0 or not isinstance(candidate, dict) or not route_id:
+            return None
+        block = int(row["block"])
+        size = float(row.get("size", candidate.get("loan_size", 0.0)))
+        notional = float(row.get("loan_notional_usd", size))
+        digest = keccak256(
+            f"{block}|{route_id}|{size:.18g}".encode()).hex()
+        return SwarmCandidate(
+            candidate_id="0x" + digest,
+            route_id=route_id,
+            worker_id=str(row.get("worker_id", "")),
+            manager_id=str(row.get("manager_id", "")),
+            block=block,
+            loan_size=size,
+            gross_profit=float(row.get("gross_usd", 0.0)),
+            flash_fee=float(row.get("flash_fee_usd", 0.0)),
+            gas_cost=float(row.get("gas_usd", 0.0)),
+            model_reserve=float(row.get("model_reserve_usd", 0.0)),
+            expected_net=expected,
+            roi=(expected / notional) if notional > 0 else 0.0,
+            timestamp=time.time(),
+            payload={"candidate": candidate, "route": row.get("route")},
+        )
+
+    def _persist_rows(self, rows: list[dict], errors: list[dict]) -> None:
+        for row in sorted(rows, key=lambda item: str(item.get("route_id", ""))):
+            candidate = row.get("candidate") or {}
+            self.ledger.record(
+                block=int(row.get("block", 0)),
+                strategy="swarm_arbitrage",
+                decision=str(row.get("decision", "REJECT")),
+                asset=candidate.get("base_asset"),
+                loan_size=row.get("size"),
+                gross=row.get("gross_usd", row.get("gross")),
+                net=row.get("expected_net_usd", row.get("net")),
+                min_profit=candidate.get("min_profit"),
+                reason=row.get("reason"),
+                detail=row,
+            )
+        for error in sorted(errors, key=lambda item: (
+                str(item.get("worker_id", "")), str(item.get("route_id", "")))):
+            self.ledger.record(
+                block=int(error.get("block", 0)),
+                strategy="swarm_worker",
+                decision="ERROR",
+                reason=str(error.get("error", "worker error")),
+                detail=error,
+            )
+
+    def run_block(self, block: int | None = None) -> dict:
+        started = time.time()
+        scan_block = int(block if block is not None else self.engine.rpc.block_number())
+        routes, context = self.catalog_builder(scan_block, self.workers)
+        unique_routes, duplicates = self._dedupe_routes(list(routes))
+        allocator = WorkAllocator(
+            self.workers, unique_routes, block=scan_block, leases=self.leases)
+        max_workers = max(1, min(
+            len(self.workers), int(self.config["swarm"].get(
+                "max_rpc_concurrency", len(self.workers)))))
+
+        rows: list[dict] = []
+        errors: list[dict] = []
+        routes_scanned = 0
+        worker_failures = 0
+        with ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="zero-swarm") as executor:
+            futures = {
+                executor.submit(self.worker_runner, worker, allocator, context): worker
+                for worker in self.workers
+            }
+            for future in as_completed(futures):
+                worker = futures[future]
+                try:
+                    outcome = future.result()
+                except Exception as exc:
+                    worker_failures += 1
+                    errors.append({
+                        "block": scan_block,
+                        "worker_id": worker.worker_id,
+                        "manager_id": worker.manager_id,
+                        "route_id": None,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+                    continue
+                if isinstance(outcome, list):
+                    rows.extend(outcome)
+                    routes_scanned += len(outcome)
+                    continue
+                if not isinstance(outcome, dict):
+                    continue
+                worker_rows = outcome.get("rows", [])
+                rows.extend(worker_rows)
+                routes_scanned += int(outcome.get(
+                    "routes_scanned", len(worker_rows)))
+                duplicates += int(outcome.get("duplicates_suppressed", 0))
+                route_errors = list(outcome.get("route_errors", []))
+                for error in route_errors:
+                    error.setdefault("block", scan_block)
+                errors.extend(route_errors)
+                worker_failures += len(route_errors)
+
+        self._persist_rows(rows, errors)
+
+        book = OpportunityBook()
+        for row in rows:
+            candidate = self._candidate_from_row(row)
+            if candidate is None:
+                continue
+            if not book.add(candidate):
+                duplicates += 1
+        ranked = book.ranked()
+        self.leases.expire_before(scan_block + 1)
+        return {
+            "block": scan_block,
+            "active_workers": len(self.workers),
+            "routes_scanned": routes_scanned,
+            "worker_failures": worker_failures,
+            "detected": len(rows),
+            "positive_net": len(ranked),
+            "duplicates_suppressed": duplicates,
+            "best_expected_net": ranked[0].expected_net if ranked else None,
+            "fork_verifications_attempted": 0,
+            "fork_verifications_passed": 0,
+            "fork_verifications_failed": 0,
+            "elapsed_s": time.time() - started,
+            "candidates": [candidate.as_dict() for candidate in ranked],
+        }
