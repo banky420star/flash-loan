@@ -23,6 +23,18 @@ class UrllibTransport:
             return resp.read()
 
 
+def _block_tag(block: int | str) -> str:
+    if isinstance(block, int):
+        if block < 0:
+            raise ValueError("block must be non-negative")
+        return hex(block)
+    if block in {"latest", "pending", "safe", "finalized", "earliest"}:
+        return block
+    if isinstance(block, str) and block.startswith("0x"):
+        return block
+    raise ValueError(f"invalid block tag: {block}")
+
+
 class Rpc:
     def __init__(self, url: str, transport=None, retries: int = 3):
         self.url = url
@@ -75,11 +87,11 @@ class Rpc:
     def block_number(self) -> int:
         return int(self.call("eth_blockNumber", []), 16)
 
-    def get_code(self, address: str) -> str:
-        return self.call("eth_getCode", [address, "latest"])
+    def get_code(self, address: str, block: int | str = "latest") -> str:
+        return self.call("eth_getCode", [address, _block_tag(block)])
 
-    def eth_call(self, to: str, data: str) -> bytes:
-        raw = self.call("eth_call", [{"to": to, "data": data}, "latest"])
+    def eth_call(self, to: str, data: str, block: int | str = "latest") -> bytes:
+        raw = self.call("eth_call", [{"to": to, "data": data}, _block_tag(block)])
         if raw == "0x" or raw is None:
             return b""
         return bytes.fromhex(raw[2:])
