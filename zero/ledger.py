@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS fork_verifications (
     predicted_net REAL NOT NULL,
     realized_net REAL NOT NULL,
     model_error REAL NOT NULL,
+    outcome_class TEXT,
     detail TEXT,
     created_at TEXT
 );
@@ -52,8 +53,36 @@ CREATE TABLE IF NOT EXISTS cycles (
 
 class Ledger:
     def __init__(self, path: str):
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, timeout=5.0)
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        self._migrate_fork_outcomes()
+
+    def _migrate_fork_outcomes(self) -> None:
+        columns = {row[1] for row in self.conn.execute(
+            "PRAGMA table_info(fork_verifications)").fetchall()}
+        if "outcome_class" not in columns:
+            self.conn.execute(
+                "ALTER TABLE fork_verifications ADD COLUMN outcome_class TEXT")
+
+        rows = self.conn.execute(
+            "SELECT id, success, detail FROM fork_verifications "
+            "WHERE outcome_class IS NULL OR outcome_class = ''").fetchall()
+        for row_id, success, detail in rows:
+            if bool(success):
+                outcome = "measured_success"
+            else:
+                text = detail or ""
+                if "StepFailed(" in text or "MinimumProfitNotMet(" in text:
+                    outcome = "execution_revert"
+                else:
+                    outcome = "invalid_harness"
+            self.conn.execute(
+                "UPDATE fork_verifications SET outcome_class=? WHERE id=?",
+                (outcome, row_id))
+        self.conn.commit()
 
     def record(self, *, block: int, strategy: str, decision: str,
                asset: str | None = None, loan_size: float | None = None,
@@ -75,11 +104,11 @@ class Ledger:
         cur = self.conn.execute(
             "INSERT INTO fork_verifications "
             "(ts, block, strategy, success, gas_used, predicted_net, "
-            "realized_net, model_error, detail, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "realized_net, model_error, outcome_class, detail, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (time.time(), result.block, result.strategy, int(result.success),
              result.gas_used, result.predicted_net, result.realized_net,
-             result.model_error, result.detail,
+             result.model_error, result.outcome_class, result.detail,
              time.strftime("%Y-%m-%d %H:%M:%S")))
         self.conn.commit()
         return cur.lastrowid
@@ -95,20 +124,27 @@ class Ledger:
             "model_error": r[6], "detail": r[7], "created_at": r[8],
         } for r in rows]
 
-    def fork_economics(self, limit: int = 100) -> list:
-        """Return recent realized-vs-predicted economics for reserve learning."""
+    def fork_economics(self, limit: int = 100, *,
+                       reserve_eligible_only: bool = True) -> list:
+        """Return recent economics, excluding non-execution evidence by default."""
         limit = int(limit)
         if limit <= 0:
             raise ValueError("limit must be positive")
+        where = (
+            "WHERE outcome_class IN ('measured_success','execution_revert') "
+            if reserve_eligible_only else ""
+        )
         rows = self.conn.execute(
-            "SELECT success, predicted_net, realized_net, model_error "
-            "FROM fork_verifications ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT success, predicted_net, realized_net, model_error, "
+            "outcome_class FROM fork_verifications " + where +
+            "ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [{
             "success": bool(row[0]),
             "predicted_net": row[1],
             "realized_net": row[2],
             "model_error": row[3],
+            "outcome_class": row[4],
         } for row in rows]
 
     def record_cycle(self, *, block: int, detected: int, passed: int,

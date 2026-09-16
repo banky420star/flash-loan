@@ -28,6 +28,7 @@ class TestAdaptiveReserveLedger(unittest.TestCase):
             predicted_net=predicted,
             realized_net=realized,
             detail="{}",
+            outcome_class=("measured_success" if success else "execution_revert"),
         ))
 
     def test_fork_economics_returns_newest_first(self):

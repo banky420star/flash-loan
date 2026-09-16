@@ -417,6 +417,9 @@ class SwarmSupervisor:
         self.catalog_builder = catalog_builder or self._build_catalog
         self.leases = RouteLeaseRegistry()
 
+    def _extra_candidates(self, block: int, context: ScanContext) -> list[SwarmCandidate]:
+        return []
+
     def _build_catalog(self, block: int,
                        workers: list[WorkerSpec]) -> tuple[list[dict], ScanContext]:
         registry = build_token_registry(self.engine.aave, block)
@@ -450,13 +453,28 @@ class SwarmSupervisor:
                 continue
             scanned += 1
             try:
-                row = self.engine.scan_cycle_config(
-                    context.block,
-                    route,
-                    swarm_mode=True,
-                    model_reserve_usd=reserve,
-                    context=context,
-                )
+                if route.get("route_kind") == "multidex_exact":
+                    row = self.engine.scan_multidex_route(
+                        context.block,
+                        route,
+                        model_reserve_usd=reserve,
+                        context=context,
+                    )
+                elif route.get("route_kind") == "multihop_exact":
+                    row = self.engine.scan_multihop_route(
+                        context.block,
+                        route,
+                        model_reserve_usd=reserve,
+                        context=context,
+                    )
+                else:
+                    row = self.engine.scan_cycle_config(
+                        context.block,
+                        route,
+                        swarm_mode=True,
+                        model_reserve_usd=reserve,
+                        context=context,
+                    )
                 if row is None:
                     continue
                 row = dict(row)
@@ -569,6 +587,11 @@ class SwarmSupervisor:
         }
 
     def _verify_candidates(self, candidates: list[SwarmCandidate]) -> tuple[int, int, int]:
+        candidates = [
+            candidate for candidate in candidates
+            if bool(((candidate.payload or {}).get("candidate") or {}).get(
+                "executable", True))
+        ]
         if (self.verifier is None
                 or not self.config["swarm"].get("verify_positive_candidates", True)
                 or not candidates):
@@ -657,6 +680,9 @@ class SwarmSupervisor:
             candidate = self._candidate_from_row(row)
             if candidate is None:
                 continue
+            if not book.add(candidate):
+                duplicates += 1
+        for candidate in self._extra_candidates(scan_block, context):
             if not book.add(candidate):
                 duplicates += 1
         ranked = book.ranked()

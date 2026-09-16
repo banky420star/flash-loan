@@ -34,12 +34,14 @@ from .fork_cli import (
     run_fork_test,
     run_live_candidate_fork,
     run_live_candidate_fork_result,
+    run_live_liquidation_fork_result,
 )
 from .gate import Gate
 from .keccak import selector_hex
 from .ledger import Ledger
 from .pnl import PnlSwarmSupervisor
 from .rpc import Rpc, encode_address, encode_uint, to_checksum
+from .runtime import RuntimeMonitor
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config",
                            "arbitrum.json")
@@ -48,6 +50,30 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config",
 def load_config() -> dict:
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
+    rpc_urls_env = os.environ.get("ZERO_RPC_URLS", "").strip()
+    rpc_url_env = os.environ.get("ZERO_RPC_URL", "").strip()
+    if rpc_urls_env:
+        rpc_urls = [value.strip() for value in rpc_urls_env.split(",")
+                    if value.strip()]
+        if not rpc_urls:
+            raise ValueError("ZERO_RPC_URLS must contain at least one URL")
+        cfg["rpc_urls"] = rpc_urls
+        cfg["rpc_url"] = rpc_urls[0]
+    elif rpc_url_env:
+        cfg["rpc_url"] = rpc_url_env
+        cfg["rpc_urls"] = [rpc_url_env]
+    else:
+        cfg.setdefault("rpc_urls", [cfg["rpc_url"]])
+    if os.environ.get("ZERO_RPC_COOLDOWN_S"):
+        cfg["rpc_cooldown_s"] = float(os.environ["ZERO_RPC_COOLDOWN_S"])
+    if os.environ.get("ZERO_LEDGER_PATH"):
+        cfg["ledger_path"] = os.environ["ZERO_LEDGER_PATH"]
+    if os.environ.get("ZERO_MAX_RPC_BATCH"):
+        cfg.setdefault("swarm", {})["max_rpc_batch"] = int(
+            os.environ["ZERO_MAX_RPC_BATCH"])
+    if os.environ.get("ZERO_MAX_RPC_CONCURRENCY"):
+        cfg.setdefault("swarm", {})["max_rpc_concurrency"] = int(
+            os.environ["ZERO_MAX_RPC_CONCURRENCY"])
     gate_cfg = cfg.get("gate", {})
     cfg["_gate"] = Gate(floor_usd=gate_cfg.get("floor_usd", 2.0),
                         gas_multiple=gate_cfg.get("gas_multiple", 4.0),
@@ -65,6 +91,12 @@ def _engine(ledger_path: str | None = None) -> ShadowEngine:
     return ShadowEngine(cfg["rpc_url"], cfg, Ledger(path))
 
 
+def _run_swarm_verifier(cfg: dict, payload: dict):
+    if payload.get("kind") == "liquidation":
+        return run_live_liquidation_fork_result(cfg["rpc_url"], payload)
+    return run_live_candidate_fork_result(cfg["rpc_url"], payload)
+
+
 def _swarm_supervisor(ledger_path: str | None = None) -> PnlSwarmSupervisor:
     cfg = load_config()
     path = ledger_path or cfg.get("ledger_path", "zero_ledger.db")
@@ -72,9 +104,32 @@ def _swarm_supervisor(ledger_path: str | None = None) -> PnlSwarmSupervisor:
     engine = ShadowEngine(cfg["rpc_url"], cfg, ledger)
 
     def verifier(payload: dict):
-        return run_live_candidate_fork_result(cfg["rpc_url"], payload)
+        return _run_swarm_verifier(cfg, payload)
 
     return PnlSwarmSupervisor(engine, cfg, ledger, verifier=verifier)
+
+
+def _runtime_monitor(cfg: dict) -> RuntimeMonitor:
+    path = (os.environ.get("ZERO_RUNTIME_STATUS_PATH", "").strip()
+            or cfg.get("runtime", {}).get("status_path", "run/zero-status.json"))
+    return RuntimeMonitor(path)
+
+
+def _runtime_endpoint(supervisor) -> str | None:
+    rpc = getattr(getattr(supervisor, "engine", None), "rpc", None)
+    if rpc is None:
+        return None
+    return getattr(rpc, "current_endpoint", getattr(rpc, "url", None))
+
+
+def _record_runtime_cycle(supervisor, monitor: RuntimeMonitor, result: dict):
+    head = int(result.get("block", 0) or 0)
+    try:
+        head = int(supervisor.engine.rpc.block_number())
+    except Exception:
+        pass
+    return monitor.record_cycle(
+        result, chain_head=head, rpc_endpoint=_runtime_endpoint(supervisor))
 
 
 def _fork_block(cfg: dict, requested: int | None) -> int:
@@ -203,16 +258,22 @@ def cmd_fork_arb(args):
 
 def cmd_swarm_once(args):
     supervisor = _swarm_supervisor(getattr(args, "ledger", None))
+    cfg = getattr(supervisor, "config", None) or load_config()
+    monitor = _runtime_monitor(cfg)
     result = supervisor.run_block()
+    _record_runtime_cycle(supervisor, monitor, result)
     print(json.dumps(result, indent=2, default=str))
     return 0
 
 
 def cmd_swarm(args):
     supervisor = _swarm_supervisor(getattr(args, "ledger", None))
+    cfg = getattr(supervisor, "config", None) or load_config()
+    monitor = _runtime_monitor(cfg)
     while True:
         try:
             result = supervisor.run_block()
+            _record_runtime_cycle(supervisor, monitor, result)
             print(
                 f"block {result['block']} "
                 f"workers={result['active_workers']} "
@@ -227,11 +288,43 @@ def cmd_swarm(args):
         except KeyboardInterrupt:
             return 0
         except Exception as exc:
+            monitor.record_error(exc, rpc_endpoint=_runtime_endpoint(supervisor))
             print(f"swarm cycle error: {type(exc).__name__}: {exc}")
         try:
             time.sleep(args.interval)
         except KeyboardInterrupt:
             return 0
+
+
+def cmd_health(args):
+    path = getattr(args, "status", None)
+    if not path:
+        cfg = load_config()
+        path = (os.environ.get("ZERO_RUNTIME_STATUS_PATH", "").strip()
+                or cfg.get("runtime", {}).get("status_path", "run/zero-status.json"))
+    max_age = max(0.0, float(getattr(args, "max_age", 120.0)))
+    if not os.path.exists(path):
+        print(json.dumps({"healthy": False, "reason": "status_missing",
+                          "status_path": path}, indent=2))
+        return 2
+    try:
+        with open(path) as handle:
+            status = json.load(handle)
+    except Exception as exc:
+        print(json.dumps({"healthy": False, "reason": "status_invalid",
+                          "error": f"{type(exc).__name__}: {exc}"}, indent=2))
+        return 2
+    heartbeat = float(status.get("heartbeat_at", 0.0) or 0.0)
+    age = max(0.0, time.time() - heartbeat)
+    killed = bool(status.get("kill_state", False))
+    healthy = (not killed) and heartbeat > 0 and age <= max_age
+    reason = ("kill_state" if killed else
+              "heartbeat_stale" if heartbeat <= 0 or age > max_age else "ok")
+    out = dict(status)
+    out.update({"healthy": healthy, "reason": reason,
+                "heartbeat_age_s": age, "status_path": path})
+    print(json.dumps(out, indent=2, default=str))
+    return 0 if healthy else (3 if killed else 2)
 
 
 def cmd_shadow(args):
@@ -323,6 +416,10 @@ def main(argv=None):
     sw.add_argument("--interval", type=float, default=5.0)
     sw.add_argument("--ledger", default=None)
     sw.set_defaults(func=cmd_swarm)
+    health = sub.add_parser("health", help="read the always-on runtime heartbeat")
+    health.add_argument("--status", default=None)
+    health.add_argument("--max-age", type=float, default=120.0)
+    health.set_defaults(func=cmd_health)
 
     sh = sub.add_parser("shadow", help="run shadow cycles (no signing)")
     sh.add_argument("--once", action="store_true")

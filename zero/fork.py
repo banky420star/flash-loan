@@ -15,6 +15,17 @@ from urllib.parse import urlparse
 
 ARBITRUM_ONE_CHAIN_ID = 42161
 
+OUTCOME_MEASURED_SUCCESS = "measured_success"
+OUTCOME_EXECUTION_REVERT = "execution_revert"
+OUTCOME_INFRASTRUCTURE_ERROR = "infrastructure_error"
+OUTCOME_INVALID_HARNESS = "invalid_harness"
+FORK_OUTCOME_CLASSES = {
+    OUTCOME_MEASURED_SUCCESS,
+    OUTCOME_EXECUTION_REVERT,
+    OUTCOME_INFRASTRUCTURE_ERROR,
+    OUTCOME_INVALID_HARNESS,
+}
+
 
 @dataclass(frozen=True)
 class ForkResult:
@@ -25,6 +36,19 @@ class ForkResult:
     predicted_net: float
     realized_net: float
     detail: str = ""
+    outcome_class: str = OUTCOME_MEASURED_SUCCESS
+
+    def __post_init__(self) -> None:
+        if self.outcome_class not in FORK_OUTCOME_CLASSES:
+            raise ValueError(f"unknown fork outcome class: {self.outcome_class}")
+        if self.success != (self.outcome_class == OUTCOME_MEASURED_SUCCESS):
+            raise ValueError("success must be true only for measured_success")
+
+    @property
+    def reserve_eligible(self) -> bool:
+        return self.outcome_class in {
+            OUTCOME_MEASURED_SUCCESS, OUTCOME_EXECUTION_REVERT
+        }
 
     @property
     def model_error(self) -> float:
