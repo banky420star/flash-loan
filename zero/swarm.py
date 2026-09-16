@@ -457,6 +457,13 @@ class SwarmSupervisor:
                         model_reserve_usd=reserve,
                         context=context,
                     )
+                elif route.get("route_kind") == "multihop_exact":
+                    row = self.engine.scan_multihop_route(
+                        context.block,
+                        route,
+                        model_reserve_usd=reserve,
+                        context=context,
+                    )
                 else:
                     row = self.engine.scan_cycle_config(
                         context.block,
@@ -577,6 +584,11 @@ class SwarmSupervisor:
         }
 
     def _verify_candidates(self, candidates: list[SwarmCandidate]) -> tuple[int, int, int]:
+        candidates = [
+            candidate for candidate in candidates
+            if bool(((candidate.payload or {}).get("candidate") or {}).get(
+                "executable", True))
+        ]
         if (self.verifier is None
                 or not self.config["swarm"].get("verify_positive_candidates", True)
                 or not candidates):

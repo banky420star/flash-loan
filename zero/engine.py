@@ -11,6 +11,8 @@ import time
 from .aave import AaveV3
 from .candidate import ArbitrageCandidate
 from .rpc import Rpc, RpcError
+from .route_quote import RouteQuoteError, evaluate_route_economics, quote_route
+from .routes import RouteCandidate, RouteLeg
 from .strategies.arbitrage import Cycle, best_opportunity, sweep_sizes
 from .strategies.liquidation import gate_liquidations, scan_watchlist
 from .swarm import ScanContext, swarm_expected_net

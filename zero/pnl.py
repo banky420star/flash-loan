@@ -124,6 +124,11 @@ class PnlSwarmSupervisor(SwarmSupervisor):
     def _verify_candidates(self, candidates: list[SwarmCandidate]) -> tuple[int, int, int]:
         started = time.perf_counter()
         try:
+            candidates = [
+                candidate for candidate in candidates
+                if bool(((candidate.payload or {}).get("candidate") or {}).get(
+                    "executable", True))
+            ]
             if (self.verifier is None
                     or not self.config["swarm"].get("verify_positive_candidates", True)
                     or not candidates):

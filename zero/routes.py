@@ -105,3 +105,54 @@ class RouteGraph:
 
         walk(start, tuple(), frozenset(), frozenset({start}))
         return [found[key] for key in sorted(found)]
+
+
+def build_multihop_route_configs(chain_id: int, pair: tuple[str, str],
+                                 tokens: dict[str, object],
+                                 pools: list[PoolRef], *, block: int,
+                                 max_routes: int = 24) -> list[dict]:
+    max_routes = int(max_routes)
+    if max_routes <= 0:
+        return []
+    base_symbol, quote_symbol = pair
+    base = tokens.get(base_symbol)
+    quote = tokens.get(quote_symbol)
+    if base is None or quote is None:
+        return []
+    graph = RouteGraph(int(chain_id), pools)
+    cycles = graph.enumerate_cycles(base.address, max_hops=3)
+    rows = []
+    quote_address = quote.address.lower()
+    for route in cycles:
+        if len(route.legs) != 3:
+            continue
+        traversed = {leg.token_in for leg in route.legs}
+        traversed.update(leg.token_out for leg in route.legs)
+        if quote_address not in traversed:
+            continue
+        rows.append({
+            "block": int(block),
+            "route_kind": "multihop_exact",
+            "route_id": route.id,
+            "name": f"{base_symbol} 3-hop cycle via {quote_symbol}",
+            "base_symbol": base_symbol,
+            "quote_symbol": quote_symbol,
+            "base": base.address,
+            "quote": quote.address,
+            "base_decimals": int(base.decimals),
+            "quote_decimals": int(quote.decimals),
+            "base_price_usd": float(base.price_usd),
+            "quote_price_usd": float(quote.price_usd),
+            "executable": False,
+            "legs": [
+                {
+                    "pool": leg.pool.__dict__.copy(),
+                    "token_in": leg.token_in,
+                    "token_out": leg.token_out,
+                }
+                for leg in route.legs
+            ],
+        })
+        if len(rows) >= max_routes:
+            break
+    return rows
