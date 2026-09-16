@@ -1,7 +1,7 @@
-from .base import VenueAdapter
+from .uniswap_v3 import UniswapV3Adapter
 
 
-class SushiV3Adapter(VenueAdapter):
-    """Sushi V3-compatible venue."""
+class SushiV3Adapter(UniswapV3Adapter):
+    """Sushi V3 shares the Uniswap V3 factory interface."""
 
     pass
