@@ -35,6 +35,7 @@ class TestAdaptiveReserveSupervisor(unittest.TestCase):
             predicted_net=predicted,
             realized_net=realized,
             detail="{}",
+            outcome_class=("measured_success" if success else "execution_revert"),
         ))
 
     def test_one_adaptive_reserve_is_shared_by_all_workers_in_block(self):
