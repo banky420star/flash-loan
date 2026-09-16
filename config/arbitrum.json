@@ -73,8 +73,26 @@
       "bootstrap_reserve_usd": 0.05
     },
     "exact_quoter_preflight": true,
-    "size_ladder_usd": [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000],
-    "fee_tiers": [100, 500, 3000, 10000],
+    "size_ladder_usd": [
+      10,
+      25,
+      50,
+      100,
+      250,
+      500,
+      1000,
+      2500,
+      5000,
+      10000,
+      25000,
+      50000
+    ],
+    "fee_tiers": [
+      100,
+      500,
+      3000,
+      10000
+    ],
     "work_stealing": true,
     "block_driven": true,
     "verify_positive_candidates": true,
@@ -83,41 +101,181 @@
       {
         "id": "ALPHA",
         "workers": [
-          {"id": "A1", "pair": ["USDC", "WETH"], "role": "core-stable-eth"},
-          {"id": "A2", "pair": ["USDt0", "WETH"], "role": "core-stable-eth"},
-          {"id": "A3", "pair": ["DAI", "WETH"], "role": "core-stable-eth"},
-          {"id": "A4", "pair": ["USDC.e", "WETH"], "role": "core-stable-eth"},
-          {"id": "A5", "pair": ["USDC", "WETH"], "role": "stable-eth-overflow"}
+          {
+            "id": "A1",
+            "pair": [
+              "USDC",
+              "WETH"
+            ],
+            "role": "core-stable-eth"
+          },
+          {
+            "id": "A2",
+            "pair": [
+              "USDt0",
+              "WETH"
+            ],
+            "role": "core-stable-eth"
+          },
+          {
+            "id": "A3",
+            "pair": [
+              "DAI",
+              "WETH"
+            ],
+            "role": "core-stable-eth"
+          },
+          {
+            "id": "A4",
+            "pair": [
+              "USDC.e",
+              "WETH"
+            ],
+            "role": "core-stable-eth"
+          },
+          {
+            "id": "A5",
+            "pair": [
+              "USDC",
+              "WETH"
+            ],
+            "role": "stable-eth-overflow"
+          }
         ]
       },
       {
         "id": "BRAVO",
         "workers": [
-          {"id": "B1", "pair": ["WBTC", "WETH"], "role": "btc-route"},
-          {"id": "B2", "pair": ["WBTC", "USDC"], "role": "btc-route"},
-          {"id": "B3", "pair": ["tBTC", "WETH"], "role": "btc-route"},
-          {"id": "B4", "pair": ["tBTC", "USDC"], "role": "btc-route"},
-          {"id": "B5", "pair": ["WBTC", "WETH"], "role": "btc-overflow"}
+          {
+            "id": "B1",
+            "pair": [
+              "WBTC",
+              "WETH"
+            ],
+            "role": "btc-route"
+          },
+          {
+            "id": "B2",
+            "pair": [
+              "WBTC",
+              "USDC"
+            ],
+            "role": "btc-route"
+          },
+          {
+            "id": "B3",
+            "pair": [
+              "tBTC",
+              "WETH"
+            ],
+            "role": "btc-route"
+          },
+          {
+            "id": "B4",
+            "pair": [
+              "tBTC",
+              "USDC"
+            ],
+            "role": "btc-route"
+          },
+          {
+            "id": "B5",
+            "pair": [
+              "WBTC",
+              "WETH"
+            ],
+            "role": "btc-overflow"
+          }
         ]
       },
       {
         "id": "CHARLIE",
         "workers": [
-          {"id": "C1", "pair": ["wstETH", "WETH"], "role": "lst-route"},
-          {"id": "C2", "pair": ["rETH", "WETH"], "role": "lst-route"},
-          {"id": "C3", "pair": ["weETH", "WETH"], "role": "lrt-route"},
-          {"id": "C4", "pair": ["ezETH", "WETH"], "role": "lrt-route"},
-          {"id": "C5", "pair": ["rsETH", "WETH"], "role": "lrt-overflow"}
+          {
+            "id": "C1",
+            "pair": [
+              "wstETH",
+              "WETH"
+            ],
+            "role": "lst-route"
+          },
+          {
+            "id": "C2",
+            "pair": [
+              "rETH",
+              "WETH"
+            ],
+            "role": "lst-route"
+          },
+          {
+            "id": "C3",
+            "pair": [
+              "weETH",
+              "WETH"
+            ],
+            "role": "lrt-route"
+          },
+          {
+            "id": "C4",
+            "pair": [
+              "ezETH",
+              "WETH"
+            ],
+            "role": "lrt-route"
+          },
+          {
+            "id": "C5",
+            "pair": [
+              "rsETH",
+              "WETH"
+            ],
+            "role": "lrt-overflow"
+          }
         ]
       },
       {
         "id": "DELTA",
         "workers": [
-          {"id": "D1", "pair": ["ARB", "WETH"], "role": "dynamic-route"},
-          {"id": "D2", "pair": ["LINK", "WETH"], "role": "dynamic-route"},
-          {"id": "D3", "pair": ["AAVE", "WETH"], "role": "dynamic-route"},
-          {"id": "D4", "pair": ["GHO", "USDC"], "role": "dynamic-route"},
-          {"id": "D5", "pair": ["ARB", "WETH"], "role": "dynamic-overflow"}
+          {
+            "id": "D1",
+            "pair": [
+              "ARB",
+              "WETH"
+            ],
+            "role": "dynamic-route"
+          },
+          {
+            "id": "D2",
+            "pair": [
+              "LINK",
+              "WETH"
+            ],
+            "role": "dynamic-route"
+          },
+          {
+            "id": "D3",
+            "pair": [
+              "AAVE",
+              "WETH"
+            ],
+            "role": "dynamic-route"
+          },
+          {
+            "id": "D4",
+            "pair": [
+              "GHO",
+              "USDC"
+            ],
+            "role": "dynamic-route"
+          },
+          {
+            "id": "D5",
+            "pair": [
+              "ARB",
+              "WETH"
+            ],
+            "role": "dynamic-overflow"
+          }
         ]
       }
     ]
@@ -126,5 +284,47 @@
     "bonus": 0.05,
     "eth_for_gas": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
     "watchlist": []
+  },
+  "venues": {
+    "uniswap_v3": {
+      "enabled": true,
+      "family": "uniswap_v3",
+      "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      "fee_tiers": [
+        100,
+        500,
+        3000,
+        10000
+      ],
+      "exact_quote_supported": true,
+      "execution_supported": true
+    },
+    "sushi_v3": {
+      "enabled": true,
+      "family": "uniswap_v3",
+      "factory": "0x1af415a1EbA07a4986a52B6f2e7dE7003D82231e",
+      "router": "0x8A21F6768C1f8075791D08546Dadf6daA0bE820c",
+      "quoter": "0x0524E833cCD057e4d7A296e3aaAb9f7675964Ce1",
+      "fee_tiers": [
+        100,
+        500,
+        3000,
+        10000
+      ],
+      "exact_quote_supported": true,
+      "execution_supported": false
+    },
+    "camelot_v3": {
+      "enabled": true,
+      "family": "algebra_v3",
+      "factory": "0x1a3c9B1d2F0529D97f2afC5136Cc23e58f1FD35B",
+      "router": "0x1F721E2E82F6676FCE4eA07A5958cF098D339e18",
+      "quoter": "0x0Fc73040b26E9bC8514fA028D998E73A254Fa76E",
+      "fee_tiers": [],
+      "exact_quote_supported": true,
+      "execution_supported": false
+    }
   }
 }
