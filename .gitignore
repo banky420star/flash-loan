@@ -5,3 +5,4 @@ zero_ledger.db
 cache/
 out/
 .DS_Store
+run/

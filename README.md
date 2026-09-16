@@ -375,3 +375,33 @@ under systemd. The ledger uses WAL mode and a busy timeout. `python3 -m zero.cli
 health` returns non-zero for a missing/stale heartbeat or an explicit kill
 state. No private-key, mnemonic, signer, nonce-manager, or raw-transaction
 configuration is part of this service release.
+
+## v0.6 roadmap status
+
+The roadmap branch now includes the following fork/shadow capabilities:
+
+- evidence-classified adaptive reserve learning;
+- batched pinned-block market reads and bounded RPC failover;
+- Uniswap V3, Sushi V3, and Camelot/Algebra venue adapters;
+- bounded two-venue and three-leg route discovery/quoting;
+- state-aware Aave V3 liquidation scanning and fork replay;
+- restart-safe shadow service packaging, WAL ledger mode, and health snapshots; and
+- a separate `ZeroExecutor.sol` with token/router/selector allowlists, step/loan bounds,
+  callback authentication, pause controls, deadlines, and minimum-profit enforcement.
+
+### Explicit production boundary
+
+`ZeroExecutor.sol` is tested on local/exact-block forks only. The Python runtime still
+contains **no private-key input, signer integration, `eth_sendRawTransaction` path, or
+mainnet broadcast command**. Live transaction signing/submission is intentionally out of
+scope until deployment security, MEV delivery, RPC quality, and operational controls are
+reviewed separately.
+
+Run the hardened executor fork fixture with:
+
+```bash
+bash scripts/hardened_executor_fork_test.sh
+```
+
+The always-on service remains shadow/fork-only and may be launched from the provided
+Docker/systemd packaging without introducing signer secrets.
