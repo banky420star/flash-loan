@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 zero_ledger.db
 .DS_Store
+.worktrees/
