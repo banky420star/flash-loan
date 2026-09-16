@@ -12,12 +12,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .fork import ForkResult
 from .reserve import AdaptiveReserve, ReserveEstimate
+from .routes import build_multihop_route_configs
 from .swarm import SwarmCandidate, SwarmSupervisor
 from .swarm_batch import (
     build_scan_context_batched,
     build_token_registry_batched,
     discover_uniswap_routes_batched,
 )
+from .venues.base import PoolRef
 from .venues.multidex import discover_route_configs
 from .venues.registry import build_venue_registry
 
@@ -63,6 +65,7 @@ class PnlSwarmSupervisor(SwarmSupervisor):
         venue_registry = build_venue_registry(self.config, self.engine.rpc)
 
         routes: list[dict] = []
+        multidex_routes: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
         for worker in workers:
             pair = worker.primary_pair
@@ -72,9 +75,28 @@ class PnlSwarmSupervisor(SwarmSupervisor):
             routes.extend(discover_uniswap_routes_batched(
                 self.engine, pair, registry, block, fee_tiers,
                 max_batch=max_batch))
-            routes.extend(discover_route_configs(
+            discovered = discover_route_configs(
                 venue_registry, pair, registry,
-                int(self.config.get("chain_id", 42161)), block))
+                int(self.config.get("chain_id", 42161)), block)
+            routes.extend(discovered)
+            multidex_routes.extend(discovered)
+
+        if bool(swarm_cfg.get("multihop_enabled", True)):
+            pool_by_id: dict[str, PoolRef] = {}
+            for row in multidex_routes:
+                for key in ("leg1", "leg2"):
+                    raw = row.get(key)
+                    if not isinstance(raw, dict):
+                        continue
+                    pool = PoolRef(**raw)
+                    pool_by_id[pool.id] = pool
+            pools = [pool_by_id[key] for key in sorted(pool_by_id)]
+            max_routes = int(swarm_cfg.get("multihop_max_routes_per_pair", 8))
+            if max_routes > 0 and pools:
+                for pair in sorted(seen_pairs):
+                    routes.extend(build_multihop_route_configs(
+                        int(self.config.get("chain_id", 42161)), pair, registry,
+                        pools, block=block, max_routes=max_routes))
 
         context = build_scan_context_batched(
             self.engine, block, routes, tokens=registry,

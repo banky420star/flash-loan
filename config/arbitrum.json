@@ -278,7 +278,10 @@
           }
         ]
       }
-    ]
+    ],
+    "multidex_probe_usd": 25,
+    "multihop_enabled": true,
+    "multihop_max_routes_per_pair": 8
   },
   "liquidation": {
     "bonus": 0.05,
