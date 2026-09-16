@@ -329,5 +329,13 @@
       "exact_quote_supported": true,
       "execution_supported": false
     }
+  },
+  "rpc_urls": [
+    "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum-one-rpc.publicnode.com"
+  ],
+  "rpc_cooldown_s": 5.0,
+  "runtime": {
+    "status_path": "run/zero-status.json"
   }
 }

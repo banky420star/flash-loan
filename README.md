@@ -348,3 +348,30 @@ candidate fork smoke.
   and kill switches is required before any restricted mainnet stage.
 - No production execution, private-key handling, MEV bidding, or mainnet writes
   are present.
+
+## Always-on shadow/fork service
+
+v0.5.8 adds restart-safe service packaging without adding a signer or a
+mainnet broadcast path. Runtime state remains chain-derived; the JSON heartbeat
+is observability only.
+
+Local development:
+
+```bash
+cp .env.example .env
+./scripts/zero_dev.sh doctor
+./scripts/zero_dev.sh once
+./scripts/zero_dev.sh run
+./scripts/zero_dev.sh health
+```
+
+`ZERO_RPC_URLS` accepts an ordered comma-separated RPC pool. Transport and
+rate-limit failures cool the failing endpoint and fall through to the next
+endpoint; JSON-RPC contract/application errors do not fail over.
+
+Docker/systemd assets live under `docker/`. Persistent SQLite data belongs in
+`/var/lib/zero`; the heartbeat is written atomically to `/run/zero/status.json`
+under systemd. The ledger uses WAL mode and a busy timeout. `python3 -m zero.cli
+health` returns non-zero for a missing/stale heartbeat or an explicit kill
+state. No private-key, mnemonic, signer, nonce-manager, or raw-transaction
+configuration is part of this service release.

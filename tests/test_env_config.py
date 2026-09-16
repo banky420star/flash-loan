@@ -20,6 +20,25 @@ class TestEnvironmentConfig(unittest.TestCase):
         self.assertEqual(cfg["swarm"]["max_rpc_batch"], 12)
         self.assertEqual(cfg["swarm"]["max_rpc_concurrency"], 7)
 
+    def test_rpc_url_list_can_be_overridden_in_order(self):
+        env = {
+            "ZERO_RPC_URLS": "https://one.example, https://two.example",
+            "ZERO_RPC_COOLDOWN_S": "9",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch.dict(os.environ, {"ZERO_RPC_URL": ""}):
+                cfg = cli.load_config()
+        self.assertEqual(cfg["rpc_urls"], [
+            "https://one.example", "https://two.example"])
+        self.assertEqual(cfg["rpc_url"], "https://one.example")
+        self.assertEqual(cfg["rpc_cooldown_s"], 9.0)
+
+    def test_legacy_single_rpc_override_collapses_pool(self):
+        env = {"ZERO_RPC_URL": "https://single.example", "ZERO_RPC_URLS": ""}
+        with patch.dict(os.environ, env, clear=False):
+            cfg = cli.load_config()
+        self.assertEqual(cfg["rpc_urls"], ["https://single.example"])
+
 
 if __name__ == "__main__":
     unittest.main()

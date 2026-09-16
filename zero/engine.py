@@ -11,6 +11,7 @@ import time
 from .aave import AaveV3
 from .candidate import ArbitrageCandidate
 from .rpc import Rpc, RpcError
+from .rpc_pool import RpcPool
 from .route_quote import RouteQuoteError, evaluate_route_economics, quote_route
 from .routes import RouteCandidate, RouteLeg
 from .strategies.arbitrage import Cycle, best_opportunity, sweep_sizes
@@ -25,7 +26,12 @@ from .venues.registry import build_venue_registry
 
 class ShadowEngine:
     def __init__(self, rpc_url: str, config: dict, ledger):
-        self.rpc = Rpc(rpc_url)
+        rpc_urls = config.get("rpc_urls") or [rpc_url]
+        rpc_urls = [str(value) for value in rpc_urls if str(value).strip()]
+        self.rpc = (
+            RpcPool(rpc_urls, cooldown_s=float(config.get("rpc_cooldown_s", 5.0)))
+            if len(rpc_urls) > 1 else Rpc(rpc_urls[0] if rpc_urls else rpc_url)
+        )
         self.config = config
         self.ledger = ledger
         self.aave = AaveV3(self.rpc, config["aave_provider"])

@@ -1,0 +1,30 @@
+[Unit]
+Description=ZERO Engine shadow/fork swarm
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zero
+Group=zero
+WorkingDirectory=/opt/zero
+EnvironmentFile=-/etc/zero/zero.env
+Environment=ZERO_WORKDIR=/opt/zero
+Environment=ZERO_LEDGER_PATH=/var/lib/zero/zero_ledger.db
+Environment=ZERO_RUNTIME_STATUS_PATH=/run/zero/status.json
+ExecStart=/opt/zero/scripts/run_service.sh
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/zero /run/zero
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

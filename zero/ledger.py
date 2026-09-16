@@ -53,7 +53,10 @@ CREATE TABLE IF NOT EXISTS cycles (
 
 class Ledger:
     def __init__(self, path: str):
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, timeout=5.0)
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
         self._migrate_fork_outcomes()
 
