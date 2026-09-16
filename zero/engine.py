@@ -10,11 +10,15 @@ import time
 
 from .aave import AaveV3
 from .candidate import ArbitrageCandidate
-from .rpc import Rpc
+from .rpc import Rpc, RpcError
 from .strategies.arbitrage import Cycle, best_opportunity, sweep_sizes
 from .strategies.liquidation import gate_liquidations, scan_watchlist
 from .swarm import ScanContext, swarm_expected_net
 from .uniswap_quoter import QUOTER_V2_ARBITRUM, UniswapV3Quoter
+from .venues.base import PoolRef
+from .venues.multidex import TwoLegRoute
+from .venues.quotes import quote_leg, route_execution_ready
+from .venues.registry import build_venue_registry
 
 
 class ShadowEngine:
@@ -25,6 +29,7 @@ class ShadowEngine:
         self.aave = AaveV3(self.rpc, config["aave_provider"])
         self.quoter = UniswapV3Quoter(
             self.rpc, config.get("uniswap_v3_quoter_v2", QUOTER_V2_ARBITRUM))
+        self.venues = build_venue_registry(config, self.rpc)
         self.gas_limit = config.get("gas_limit", 2_000_000)
         self.gas_price_gwei = config.get("gas_price_gwei", 0.1)
 
@@ -139,6 +144,121 @@ class ShadowEngine:
             "quoter_gas_estimate": int(hop1.gas_estimate) + int(hop2.gas_estimate),
         })
         return out
+
+    def scan_multidex_route(self, block: int, route_config: dict, *,
+                            model_reserve_usd: float = 0.0,
+                            context: ScanContext | None = None) -> dict | None:
+        """Exact-quote one two-leg venue route at a single pinned block."""
+        block = int(block)
+        if int(route_config.get("block", block)) != block:
+            raise ValueError("mixed-block multi-dex route")
+        if context is None or int(context.block) != block:
+            raise ValueError("multi-dex scan requires a pinned ScanContext")
+        leg1 = PoolRef(**route_config["leg1"])
+        leg2 = PoolRef(**route_config["leg2"])
+        route = TwoLegRoute(int(self.config.get("chain_id", 42161)), block,
+                            route_config["base"], route_config["quote"],
+                            leg1, leg2)
+        base_decimals = int(route_config["base_decimals"])
+        quote_decimals = int(route_config["quote_decimals"])
+        base_price = float(route_config.get("base_price_usd", 0.0) or 0.0)
+        symbol = route_config.get("base_symbol")
+        if symbol in context.tokens:
+            base_price = float(context.tokens[symbol].price_usd)
+        if base_price <= 0:
+            raise ValueError("multi-dex base price must be positive")
+
+        def evaluate(usd_size: float) -> dict | None:
+            loan_raw = int((Decimal(str(usd_size)) / Decimal(str(base_price))
+                            * (Decimal(10) ** base_decimals)).to_integral_value(
+                                rounding=ROUND_FLOOR))
+            if loan_raw <= 0:
+                return None
+            try:
+                q1 = quote_leg(self.venues, leg1, loan_raw,
+                               route_config["base"], block)
+                if int(q1.amount_out) <= 0:
+                    return None
+                q2 = quote_leg(self.venues, leg2, int(q1.amount_out),
+                               route_config["quote"], block)
+            except RpcError as exc:
+                if str(exc).startswith("RPC error:"):
+                    return None
+                raise
+            gross_raw = int(q2.amount_out) - loan_raw
+            gross_base = gross_raw / (10 ** base_decimals)
+            gross_usd = gross_base * base_price
+            fee_raw = (loan_raw * int(context.premium_bps) + 5_000) // 10_000
+            flash_fee_base = fee_raw / (10 ** base_decimals)
+            flash_fee_usd = flash_fee_base * base_price
+            expected = swarm_expected_net(gross_usd, flash_fee_usd,
+                                          float(context.gas_usd),
+                                          float(model_reserve_usd))
+            return {
+                "loan_raw": loan_raw, "size": loan_raw / (10 ** base_decimals),
+                "hop1_out": int(q1.amount_out) / (10 ** quote_decimals),
+                "hop2_out": int(q2.amount_out) / (10 ** base_decimals),
+                "gross": gross_base, "gross_usd": gross_usd,
+                "flash_fee_base": flash_fee_base, "flash_fee_usd": flash_fee_usd,
+                "expected_net_usd": expected,
+                "fee1": q1.fee_used if q1.fee_used is not None else leg1.fee_tier,
+                "fee2": q2.fee_used if q2.fee_used is not None else leg2.fee_tier,
+            }
+
+        swarm_cfg = self.config.get("swarm", {})
+        ladder = [float(v) for v in swarm_cfg.get("size_ladder_usd", [])]
+        if not ladder:
+            return None
+        probe_usd = float(swarm_cfg.get("multidex_probe_usd", ladder[0]))
+        probe = evaluate(probe_usd)
+        if probe is None:
+            return None
+        evaluated = [probe]
+        if float(probe["expected_net_usd"]) > 0:
+            for usd_size in ladder:
+                if usd_size == probe_usd:
+                    continue
+                item = evaluate(usd_size)
+                if item is not None:
+                    evaluated.append(item)
+        best = max(evaluated, key=lambda item: item["expected_net_usd"])
+        executable = route_execution_ready(route, self.venues)
+        positive = float(best["expected_net_usd"]) > 0
+        decision = "PASS" if positive and executable else ("OBSERVE" if positive else "REJECT")
+        one_raw = 1 / (10 ** base_decimals)
+        min_profit = ((float(context.gas_usd) + float(model_reserve_usd))
+                      / base_price + one_raw)
+        candidate = None
+        if decision == "PASS":
+            candidate = ArbitrageCandidate(
+                block=block, name=route_config.get("name", "multi-dex"),
+                base_asset=route_config["base"], quote_asset=route_config["quote"],
+                base_decimals=base_decimals, quote_decimals=quote_decimals,
+                loan_size=best["size"], hop1_expected_out=best["hop1_out"],
+                hop2_expected_out=best["hop2_out"], fee1=int(best["fee1"] or 0),
+                fee2=int(best["fee2"] or 0), flash_premium_bps=int(context.premium_bps),
+                gas_cost_usd=float(context.gas_usd), gross_profit=best["gross"],
+                predicted_net=best["expected_net_usd"], min_profit=min_profit)
+        return {
+            "block": block, "route_id": route_config.get("route_id", route.id),
+            "name": route_config.get("name", "multi-dex"), "size": best["size"],
+            "loan_notional_usd": best["size"] * base_price,
+            "gross": best["gross"], "gross_usd": best["gross_usd"],
+            "net": best["expected_net_usd"],
+            "expected_net_usd": best["expected_net_usd"],
+            "quote_source": "venue_exact", "decision": decision,
+            "reason": "ok" if decision == "PASS" else (
+                "execution_encoder_unavailable" if decision == "OBSERVE"
+                else "expected_net_usd <= 0"),
+            "flash_premium_bps": int(context.premium_bps),
+            "flash_fee": best["flash_fee_base"],
+            "flash_fee_usd": best["flash_fee_usd"],
+            "hop1_out": best["hop1_out"], "hop2_out": best["hop2_out"],
+            "gas_usd": float(context.gas_usd),
+            "model_reserve_usd": float(model_reserve_usd),
+            "min_profit": min_profit,
+            "candidate": candidate.as_dict() if candidate else None,
+        }
 
     def scan_cycle_config(self, block: int, cycle_config: dict, *,
                           sizes: list[float] | None = None,

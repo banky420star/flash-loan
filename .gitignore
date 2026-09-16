@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
 zero_ledger.db
+.env
+cache/
+out/
 .DS_Store

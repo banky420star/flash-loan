@@ -60,8 +60,8 @@
     "enabled": true,
     "worker_count": 20,
     "manager_count": 4,
-    "max_rpc_concurrency": 20,
-    "max_rpc_batch": 100,
+    "max_rpc_concurrency": 8,
+    "max_rpc_batch": 20,
     "model_reserve_usd": 0.0,
     "adaptive_reserve": {
       "enabled": true,

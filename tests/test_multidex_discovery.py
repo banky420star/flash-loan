@@ -70,3 +70,35 @@ class TestMultiDexDiscovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Token:
+    def __init__(self, symbol, address, decimals, price_usd):
+        self.symbol = symbol
+        self.address = address
+        self.decimals = decimals
+        self.price_usd = price_usd
+
+
+class TestMultiDexCatalog(unittest.TestCase):
+    def test_discover_route_configs_emits_non_uniswap_exact_routes(self):
+        from zero.venues.multidex import discover_route_configs
+        rpc = FakeRpc()
+        venues = {
+            "uniswap_v3": UniswapV3Adapter(
+                "uniswap_v3", rpc, F1, R, Q, (500, 3000), True, True,
+                "uniswap_v3"),
+            "camelot_v3": CamelotV3Adapter(
+                "camelot_v3", rpc, F2, R, Q, (), True, False,
+                "algebra_v3"),
+        }
+        tokens = {"USDC": Token("USDC", A, 6, 1.0),
+                  "WETH": Token("WETH", B, 18, 2000.0)}
+        rows = discover_route_configs(
+            venues, ("USDC", "WETH"), tokens, 42161, 777)
+        self.assertTrue(rows)
+        self.assertTrue(all(r["route_kind"] == "multidex_exact" for r in rows))
+        self.assertTrue(all(not (
+            r["leg1"]["venue_id"] == "uniswap_v3" and
+            r["leg2"]["venue_id"] == "uniswap_v3") for r in rows))
+        self.assertEqual(len({r["route_id"] for r in rows}), len(rows))

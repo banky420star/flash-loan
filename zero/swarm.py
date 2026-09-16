@@ -450,13 +450,21 @@ class SwarmSupervisor:
                 continue
             scanned += 1
             try:
-                row = self.engine.scan_cycle_config(
-                    context.block,
-                    route,
-                    swarm_mode=True,
-                    model_reserve_usd=reserve,
-                    context=context,
-                )
+                if route.get("route_kind") == "multidex_exact":
+                    row = self.engine.scan_multidex_route(
+                        context.block,
+                        route,
+                        model_reserve_usd=reserve,
+                        context=context,
+                    )
+                else:
+                    row = self.engine.scan_cycle_config(
+                        context.block,
+                        route,
+                        swarm_mode=True,
+                        model_reserve_usd=reserve,
+                        context=context,
+                    )
                 if row is None:
                     continue
                 row = dict(row)

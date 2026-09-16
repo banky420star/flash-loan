@@ -48,6 +48,16 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config",
 def load_config() -> dict:
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
+    if os.environ.get("ZERO_RPC_URL"):
+        cfg["rpc_url"] = os.environ["ZERO_RPC_URL"]
+    if os.environ.get("ZERO_LEDGER_PATH"):
+        cfg["ledger_path"] = os.environ["ZERO_LEDGER_PATH"]
+    if os.environ.get("ZERO_MAX_RPC_BATCH"):
+        cfg.setdefault("swarm", {})["max_rpc_batch"] = int(
+            os.environ["ZERO_MAX_RPC_BATCH"])
+    if os.environ.get("ZERO_MAX_RPC_CONCURRENCY"):
+        cfg.setdefault("swarm", {})["max_rpc_concurrency"] = int(
+            os.environ["ZERO_MAX_RPC_CONCURRENCY"])
     gate_cfg = cfg.get("gate", {})
     cfg["_gate"] = Gate(floor_usd=gate_cfg.get("floor_usd", 2.0),
                         gas_multiple=gate_cfg.get("gas_multiple", 4.0),

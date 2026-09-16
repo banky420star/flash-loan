@@ -18,6 +18,8 @@ from .swarm_batch import (
     build_token_registry_batched,
     discover_uniswap_routes_batched,
 )
+from .venues.multidex import discover_route_configs
+from .venues.registry import build_venue_registry
 
 
 class PnlSwarmSupervisor(SwarmSupervisor):
@@ -58,6 +60,7 @@ class PnlSwarmSupervisor(SwarmSupervisor):
             max_batch=max_batch)
         fee_tiers = [int(value) for value in swarm_cfg.get(
             "fee_tiers", [100, 500, 3000, 10000])]
+        venue_registry = build_venue_registry(self.config, self.engine.rpc)
 
         routes: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
@@ -69,6 +72,9 @@ class PnlSwarmSupervisor(SwarmSupervisor):
             routes.extend(discover_uniswap_routes_batched(
                 self.engine, pair, registry, block, fee_tiers,
                 max_batch=max_batch))
+            routes.extend(discover_route_configs(
+                venue_registry, pair, registry,
+                int(self.config.get("chain_id", 42161)), block))
 
         context = build_scan_context_batched(
             self.engine, block, routes, tokens=registry,

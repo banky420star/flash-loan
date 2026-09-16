@@ -74,6 +74,10 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
                        return_value={}) as registry, \
                  patch("zero.pnl.discover_uniswap_routes_batched", create=True,
                        return_value=[]) as discover, \
+                 patch("zero.pnl.build_venue_registry", create=True,
+                       return_value={}) as venue_registry, \
+                 patch("zero.pnl.discover_route_configs", create=True,
+                       return_value=[]) as multidex, \
                  patch("zero.pnl.build_scan_context_batched", create=True,
                        return_value=context) as scan_context:
                 routes, actual_context = supervisor._build_catalog(
@@ -90,6 +94,8 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
         self.assertGreater(discover.call_count, 0)
         self.assertTrue(all(call.kwargs["max_batch"] == 17
                             for call in discover.call_args_list))
+        self.assertEqual(venue_registry.call_count, 1)
+        self.assertGreater(multidex.call_count, 0)
         self.assertEqual(scan_context.call_count, 1)
         self.assertEqual(scan_context.call_args.kwargs["max_batch"], 17)
         self.assertEqual(scan_context.call_args.kwargs["aave_pool"],
