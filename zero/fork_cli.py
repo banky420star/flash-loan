@@ -9,7 +9,10 @@ import shlex
 import subprocess
 import uuid
 
-from .fork import AnvilFork, ForkResult
+from .fork import (
+    AnvilFork, ForkResult, OUTCOME_EXECUTION_REVERT,
+    OUTCOME_INFRASTRUCTURE_ERROR, OUTCOME_INVALID_HARNESS,
+)
 
 
 RESULT_DIR = "out/zero-results"
@@ -103,6 +106,22 @@ def run_live_candidate_fork(upstream_rpc: str, payload: dict) -> int:
             pass
 
 
+def _classify_failed_replay(completed) -> str:
+    stdout = (getattr(completed, "stdout", "") or "")
+    stderr = (getattr(completed, "stderr", "") or "")
+    text = (stdout + "\n" + stderr).lower()
+    if "stepfailed(" in text or "minimumprofitnotmet(" in text:
+        return OUTCOME_EXECUTION_REVERT
+    infrastructure_markers = (
+        "forge is required", "foundry", "too many requests", "http 429",
+        "error sending request", "connection", "network", "rpc",
+        "timed out", "timeout", "unreachable",
+    )
+    if any(marker in text for marker in infrastructure_markers):
+        return OUTCOME_INFRASTRUCTURE_ERROR
+    return OUTCOME_INFRASTRUCTURE_ERROR
+
+
 def run_live_candidate_fork_result(upstream_rpc: str, payload: dict) -> ForkResult:
     """Replay one candidate and return machine-readable fork economics.
 
@@ -147,6 +166,7 @@ def run_live_candidate_fork_result(upstream_rpc: str, payload: dict) -> ForkResu
                 predicted_net=predicted_model_net,
                 realized_net=0.0,
                 detail=json.dumps(base_detail, sort_keys=True),
+                outcome_class=_classify_failed_replay(completed),
             )
 
         path = Path(result_path)
@@ -160,6 +180,7 @@ def run_live_candidate_fork_result(upstream_rpc: str, payload: dict) -> ForkResu
                 predicted_net=predicted_model_net,
                 realized_net=0.0,
                 detail=json.dumps(base_detail, sort_keys=True),
+                outcome_class=OUTCOME_INVALID_HARNESS,
             )
 
         raw = json.loads(path.read_text())
@@ -213,6 +234,11 @@ def run_live_candidate_fork_result(upstream_rpc: str, payload: dict) -> ForkResu
             predicted_net=predicted_model_net,
             realized_net=0.0,
             detail=json.dumps(detail, sort_keys=True),
+            outcome_class=(
+                OUTCOME_INVALID_HARNESS
+                if completed is not None and getattr(completed, "returncode", -1) == 0
+                else OUTCOME_INFRASTRUCTURE_ERROR
+            ),
         )
     finally:
         try:
