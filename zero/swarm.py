@@ -417,6 +417,9 @@ class SwarmSupervisor:
         self.catalog_builder = catalog_builder or self._build_catalog
         self.leases = RouteLeaseRegistry()
 
+    def _extra_candidates(self, block: int, context: ScanContext) -> list[SwarmCandidate]:
+        return []
+
     def _build_catalog(self, block: int,
                        workers: list[WorkerSpec]) -> tuple[list[dict], ScanContext]:
         registry = build_token_registry(self.engine.aave, block)
@@ -677,6 +680,9 @@ class SwarmSupervisor:
             candidate = self._candidate_from_row(row)
             if candidate is None:
                 continue
+            if not book.add(candidate):
+                duplicates += 1
+        for candidate in self._extra_candidates(scan_block, context):
             if not book.add(candidate):
                 duplicates += 1
         ranked = book.ranked()

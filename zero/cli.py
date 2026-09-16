@@ -34,6 +34,7 @@ from .fork_cli import (
     run_fork_test,
     run_live_candidate_fork,
     run_live_candidate_fork_result,
+    run_live_liquidation_fork_result,
 )
 from .gate import Gate
 from .keccak import selector_hex
@@ -75,6 +76,12 @@ def _engine(ledger_path: str | None = None) -> ShadowEngine:
     return ShadowEngine(cfg["rpc_url"], cfg, Ledger(path))
 
 
+def _run_swarm_verifier(cfg: dict, payload: dict):
+    if payload.get("kind") == "liquidation":
+        return run_live_liquidation_fork_result(cfg["rpc_url"], payload)
+    return run_live_candidate_fork_result(cfg["rpc_url"], payload)
+
+
 def _swarm_supervisor(ledger_path: str | None = None) -> PnlSwarmSupervisor:
     cfg = load_config()
     path = ledger_path or cfg.get("ledger_path", "zero_ledger.db")
@@ -82,7 +89,7 @@ def _swarm_supervisor(ledger_path: str | None = None) -> PnlSwarmSupervisor:
     engine = ShadowEngine(cfg["rpc_url"], cfg, ledger)
 
     def verifier(payload: dict):
-        return run_live_candidate_fork_result(cfg["rpc_url"], payload)
+        return _run_swarm_verifier(cfg, payload)
 
     return PnlSwarmSupervisor(engine, cfg, ledger, verifier=verifier)
 

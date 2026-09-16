@@ -11,6 +11,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .fork import ForkResult
+from .liquidation_calldata import build_liquidation_steps
+from .liquidation_swarm import scan_liquidation_watchlist
 from .reserve import AdaptiveReserve, ReserveEstimate
 from .routes import build_multihop_route_configs
 from .swarm import SwarmCandidate, SwarmSupervisor
@@ -26,6 +28,43 @@ from .venues.registry import build_venue_registry
 
 class PnlSwarmSupervisor(SwarmSupervisor):
     """Swarm supervisor with learned reserve, batched reads, and fork P&L."""
+
+    def _extra_candidates(self, block: int, context) -> list[SwarmCandidate]:
+        liq_cfg = self.config.get("liquidation", {}) or {}
+        if not (liq_cfg.get("borrowers") or liq_cfg.get("watchlist")):
+            return []
+        venues = getattr(self.engine, "venues", None)
+        if not isinstance(venues, dict):
+            return []
+        candidates, errors = scan_liquidation_watchlist(
+            self.engine, self.config, context, venues,
+            model_reserve_usd=float(getattr(
+                self, "_cycle_model_reserve_usd",
+                self.config.get("swarm", {}).get("model_reserve_usd", 0.0))))
+        for candidate in candidates:
+            raw = ((candidate.payload or {}).get("candidate") or {})
+            executable = bool(raw.get("executable", False))
+            self.ledger.record(
+                block=int(candidate.block),
+                strategy="swarm_liquidation",
+                decision="PASS" if executable else "OBSERVE",
+                asset=raw.get("base_asset"),
+                loan_size=float(candidate.loan_size),
+                gross=float(candidate.gross_profit),
+                net=float(candidate.expected_net),
+                min_profit=raw.get("min_profit"),
+                reason="ok" if executable else "fork_encoder_pending",
+                detail=candidate.as_dict(),
+            )
+        for error in errors:
+            self.ledger.record(
+                block=int(error.get("block", block)),
+                strategy="swarm_liquidation_worker",
+                decision="ERROR",
+                reason=str(error.get("error", "liquidation scan error")),
+                detail=error,
+            )
+        return candidates
 
     def _reserve_estimate(self) -> ReserveEstimate:
         swarm_cfg = self.config.get("swarm", {})
@@ -130,14 +169,31 @@ class PnlSwarmSupervisor(SwarmSupervisor):
         return result
 
     def _fork_payload(self, candidate: SwarmCandidate) -> dict:
-        payload = super()._fork_payload(candidate)
         source = candidate.payload or {}
+        raw_candidate = source.get("candidate") or {}
         route = source.get("route") or {}
+        if raw_candidate.get("route_kind") == "liquidation_exact":
+            execution = self.config["arbitrage"]["execution"]
+            aave_pool = self.engine.aave.pool_address(block=candidate.block)
+            steps = build_liquidation_steps(
+                raw_candidate, aave_pool, execution["swap_router_02"],
+                slippage_bps=int(execution.get("slippage_bps", 20)))
+            payload = {
+                "kind": "liquidation",
+                "candidate": dict(raw_candidate),
+                "steps": [step.as_dict() for step in steps],
+            }
+            strategy = "swarm_liquidation"
+            base_price_usd = float(raw_candidate.get("base_price_usd", 1.0))
+        else:
+            payload = super()._fork_payload(candidate)
+            strategy = "swarm_arbitrage"
+            base_price_usd = float(route.get("base_price_usd", 1.0))
         payload["verification"] = {
             "candidate_id": candidate.candidate_id,
             "route_id": candidate.route_id,
-            "strategy": "swarm_arbitrage",
-            "base_price_usd": float(route.get("base_price_usd", 1.0)),
+            "strategy": strategy,
+            "base_price_usd": base_price_usd,
             "model_reserve_usd": float(candidate.model_reserve),
             "gas_limit": int(self.config.get("gas_limit", 0) or 0),
         }
