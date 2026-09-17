@@ -11,14 +11,26 @@ from zero.ledger import Ledger
 from zero.pnl import PnlSwarmSupervisor
 
 
+def configure_marketdata_smoke(cfg: dict) -> dict:
+    """Scope live CI to the bounded batched Uniswap market-data path."""
+    swarm = cfg.setdefault("swarm", {})
+    swarm["verify_positive_candidates"] = False
+    swarm["multihop_enabled"] = False
+    for venue_id, venue in (cfg.get("venues", {}) or {}).items():
+        if venue_id != "uniswap_v3":
+            venue["enabled"] = False
+    return cfg
+
+
 def main() -> int:
     cfg = load_config()
     rpc_override = os.environ.get("ZERO_LIVE_RPC_URL")
     if rpc_override:
         cfg["rpc_url"] = rpc_override
-    # This smoke validates live catalog/context/scanning only. Fork execution is
-    # covered by the dedicated Aave and candidate-fork jobs.
-    cfg["swarm"]["verify_positive_candidates"] = False
+    # Keep this job a bounded batched market-data smoke. Multi-DEX route
+    # economics are deterministic unit-test coverage; exercising every exact
+    # venue quote here turns a provider smoke into a public-RPC stress test.
+    configure_marketdata_smoke(cfg)
 
     with tempfile.TemporaryDirectory(prefix="zero-swarm-smoke-") as tmp:
         ledger = Ledger(os.path.join(tmp, "ledger.db"))
