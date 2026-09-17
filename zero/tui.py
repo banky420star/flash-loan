@@ -101,7 +101,12 @@ def render_process(snapshot: MonitoringSnapshot, *, width: int = 120) -> str:
     proc = snapshot.process
     lines = [_rule("ZERO PROCESS MONITOR", width)]
     if proc is None:
-        lines.append("PROCESS NOT FOUND | status PID unavailable or no matching swarm process")
+        if snapshot.process_alive:
+            lines.append(
+                f"PROCESS ALIVE | PID {s.get('process_pid', '--')} | "
+                "CPU/RAM unavailable (heartbeat confirmed)")
+        else:
+            lines.append("PROCESS NOT FOUND | status PID unavailable or no matching swarm process")
     else:
         lines.append(
             f"PROCESS ALIVE | PID {proc.pid} | CPU {proc.cpu_percent:.1f}% | "

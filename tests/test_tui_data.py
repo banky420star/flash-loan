@@ -113,6 +113,19 @@ class TestTuiPnlData(unittest.TestCase):
         self.assertTrue(snap.process_alive)
         self.assertEqual(snap.process.pid, 777)
 
+    def test_fresh_heartbeat_keeps_engine_alive_when_ps_probe_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = os.path.join(tmp, "status.json")
+            with open(status_path, "w") as handle:
+                json.dump({"process_pid": 4242, "process_started_at": 100.0,
+                           "heartbeat_at": 199.0, "cycle_phase": "scanning"}, handle)
+            snap = load_monitoring_snapshot(
+                status_path=status_path, ledger_path=os.path.join(tmp, "missing.db"),
+                log_path=os.path.join(tmp, "missing.log"), now=200.0,
+                process_finder=lambda: None, process_reader=lambda pid: None)
+        self.assertTrue(snap.process_alive)
+        self.assertIsNone(snap.process)
+
     def test_snapshot_combines_status_process_pnl_and_error_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             ledger = os.path.join(tmp, "ledger.db")

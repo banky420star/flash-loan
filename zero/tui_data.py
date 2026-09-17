@@ -300,6 +300,12 @@ def load_monitoring_snapshot(*, status_path: str, ledger_path: str,
     cycle_started = status.get("cycle_started_at")
     heartbeat_age = (max(0.0, now - float(heartbeat)) if heartbeat else None)
     cycle_age = (max(0.0, now - float(cycle_started)) if cycle_started else None)
+    heartbeat_confirms_alive = bool(
+        recorded_pid is not None
+        and heartbeat_age is not None
+        and heartbeat_age <= 15.0
+        and not bool(status.get("kill_state", False))
+    )
     process_start = status.get("process_started_at")
     pnl = load_pnl_summary(
         ledger_path,
@@ -315,7 +321,7 @@ def load_monitoring_snapshot(*, status_path: str, ledger_path: str,
         now=now,
         status=status,
         process=process,
-        process_alive=bool(process and process.alive),
+        process_alive=bool(process and process.alive) or heartbeat_confirms_alive,
         heartbeat_age_s=heartbeat_age,
         cycle_age_s=cycle_age,
         pnl=pnl,

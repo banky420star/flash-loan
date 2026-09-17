@@ -45,6 +45,18 @@ class TestTuiRendering(unittest.TestCase):
         self.assertIn("invalid harness", text.lower())
         self.assertIn("SIMULATED", text)
 
+    def test_process_monitor_uses_fresh_heartbeat_when_ps_telemetry_unavailable(self):
+        snap = self.snapshot()
+        snap = MonitoringSnapshot(
+            now=snap.now, status={**snap.status, "process_pid": 4242},
+            process=None, process_alive=True, heartbeat_age_s=1.0,
+            cycle_age_s=snap.cycle_age_s, pnl=snap.pnl, errors=snap.errors,
+            log_tail=snap.log_tail, recent_forks=snap.recent_forks)
+        text = render_process(snap, width=110)
+        self.assertIn("PROCESS ALIVE", text)
+        self.assertIn("PID 4242", text)
+        self.assertIn("CPU/RAM unavailable", text)
+
     def test_process_monitor_separates_process_alive_from_cycle_age(self):
         text = render_process(self.snapshot(), width=110)
         self.assertIn("ZERO PROCESS MONITOR", text)
