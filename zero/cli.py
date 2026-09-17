@@ -53,16 +53,16 @@ def load_config() -> dict:
         cfg = json.load(f)
     rpc_urls_env = os.environ.get("ZERO_RPC_URLS", "").strip()
     rpc_url_env = os.environ.get("ZERO_RPC_URL", "").strip()
-    if rpc_urls_env:
+    if rpc_url_env:
+        cfg["rpc_url"] = rpc_url_env
+        cfg["rpc_urls"] = [rpc_url_env]
+    elif rpc_urls_env:
         rpc_urls = [value.strip() for value in rpc_urls_env.split(",")
                     if value.strip()]
         if not rpc_urls:
             raise ValueError("ZERO_RPC_URLS must contain at least one URL")
         cfg["rpc_urls"] = rpc_urls
         cfg["rpc_url"] = rpc_urls[0]
-    elif rpc_url_env:
-        cfg["rpc_url"] = rpc_url_env
-        cfg["rpc_urls"] = [rpc_url_env]
     else:
         cfg.setdefault("rpc_urls", [cfg["rpc_url"]])
     if os.environ.get("ZERO_RPC_COOLDOWN_S"):
