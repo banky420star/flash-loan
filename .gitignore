@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 zero_ledger.db
+*.db-shm
+*.db-wal
 .env
 cache/
 out/

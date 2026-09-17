@@ -19,7 +19,8 @@ from .swarm import SwarmCandidate, SwarmSupervisor
 from .swarm_batch import (
     build_scan_context_batched,
     build_token_registry_batched,
-    discover_uniswap_routes_batched,
+    discover_uniswap_routes_many_batched,
+    refresh_token_prices_batched,
 )
 from .venues.base import PoolRef
 from .venues.multidex import discover_route_configs
@@ -94,31 +95,60 @@ class PnlSwarmSupervisor(SwarmSupervisor):
         if max_batch <= 0:
             raise ValueError("swarm.max_rpc_batch must be positive")
 
-        aave_pool = self.engine.aave.pool_address(block=block)
-        oracle = self.engine.aave.oracle_address(block=block)
-        registry = build_token_registry_batched(
-            self.engine, block, pool=aave_pool, oracle=oracle,
-            max_batch=max_batch)
+        static_refresh_s = max(0.0, float(
+            swarm_cfg.get("static_metadata_refresh_s", 60.0)))
+        now = time.monotonic()
+        static_cache = getattr(self, "_static_market_cache", None)
+        cache_fresh = bool(
+            static_cache
+            and static_refresh_s > 0
+            and now - float(static_cache["refreshed_at"]) < static_refresh_s
+        )
+        if cache_fresh:
+            aave_pool = str(static_cache["aave_pool"])
+            oracle = str(static_cache["oracle"])
+            registry = refresh_token_prices_batched(
+                self.engine, block, static_cache["tokens"], oracle=oracle,
+                max_batch=max_batch)
+        else:
+            aave_pool = self.engine.aave.pool_address(block=block)
+            oracle = self.engine.aave.oracle_address(block=block)
+            registry = build_token_registry_batched(
+                self.engine, block, pool=aave_pool, oracle=oracle,
+                max_batch=max_batch)
+            self._static_market_cache = {
+                "refreshed_at": now,
+                "aave_pool": aave_pool,
+                "oracle": oracle,
+                "tokens": dict(registry),
+            }
         fee_tiers = [int(value) for value in swarm_cfg.get(
             "fee_tiers", [100, 500, 3000, 10000])]
         venue_registry = build_venue_registry(self.config, self.engine.rpc)
+        executable_only = bool(swarm_cfg.get("executable_routes_only", False))
+        if executable_only:
+            discovery_registry = {
+                venue_id: adapter for venue_id, adapter in venue_registry.items()
+                if bool(getattr(adapter, "execution_supported", False))
+            }
+        else:
+            discovery_registry = venue_registry
+        can_discover_multidex = (not executable_only or len(discovery_registry) >= 2)
 
         routes: list[dict] = []
         multidex_routes: list[dict] = []
-        seen_pairs: set[tuple[str, str]] = set()
-        for worker in workers:
-            pair = worker.primary_pair
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-            routes.extend(discover_uniswap_routes_batched(
-                self.engine, pair, registry, block, fee_tiers,
-                max_batch=max_batch))
-            discovered = discover_route_configs(
-                venue_registry, pair, registry,
-                int(self.config.get("chain_id", 42161)), block)
-            routes.extend(discovered)
-            multidex_routes.extend(discovered)
+        seen_pairs = {worker.primary_pair for worker in workers}
+        ordered_pairs = sorted(seen_pairs)
+        routes.extend(discover_uniswap_routes_many_batched(
+            self.engine, ordered_pairs, registry, block, fee_tiers,
+            max_batch=max_batch))
+        if can_discover_multidex:
+            for pair in ordered_pairs:
+                discovered = discover_route_configs(
+                    discovery_registry, pair, registry,
+                    int(self.config.get("chain_id", 42161)), block)
+                routes.extend(discovered)
+                multidex_routes.extend(discovered)
 
         if bool(swarm_cfg.get("multihop_enabled", True)):
             pool_by_id: dict[str, PoolRef] = {}

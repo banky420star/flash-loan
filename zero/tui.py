@@ -3,9 +3,73 @@ from __future__ import annotations
 import argparse
 import curses
 import os
+import re
 import time
 
 from .tui_data import MonitoringSnapshot, load_monitoring_snapshot
+
+
+_COLOR_PAIR_BY_ROLE = {
+    "accent": 1,
+    "good": 2,
+    "warn": 3,
+    "bad": 4,
+    "money": 5,
+}
+
+
+def _line_color_role(line: str) -> str:
+    text = str(line)
+    lower = text.lower()
+    if text.startswith(" ") and "---" in text:
+        return "accent"
+    failed_nonzero = bool(re.search(r"\b(?:failed|failures)\s+[1-9]\d*", lower))
+    if "process not found" in lower or failed_nonzero or any(
+            marker in lower for marker in (
+                "403 forbidden", "429", "traceback", "exception",
+                " error", "revert")):
+        return "bad"
+    if "process alive" in lower or "doctor pass" in lower:
+        return "good"
+    if "warning" in lower or "stale" in lower or "cooldown" in lower:
+        return "warn"
+    if any(marker in lower for marker in (
+            "predicted", "realized", "best measured", "worst measured")):
+        return "money"
+    return "normal"
+
+
+def _init_colors() -> None:
+    if not curses.has_colors():
+        return
+    curses.start_color()
+    try:
+        curses.use_default_colors()
+        background = -1
+    except curses.error:
+        background = curses.COLOR_BLACK
+    pairs = (
+        (1, curses.COLOR_CYAN),
+        (2, curses.COLOR_GREEN),
+        (3, curses.COLOR_YELLOW),
+        (4, curses.COLOR_RED),
+        (5, curses.COLOR_MAGENTA),
+    )
+    for pair_id, foreground in pairs:
+        try:
+            curses.init_pair(pair_id, foreground, background)
+        except curses.error:
+            pass
+
+
+def _line_attr(line: str) -> int:
+    pair_id = _COLOR_PAIR_BY_ROLE.get(_line_color_role(line))
+    if pair_id is None or not curses.has_colors():
+        return 0
+    try:
+        return curses.color_pair(pair_id)
+    except curses.error:
+        return 0
 
 
 def _money(value: float | None) -> str:
@@ -120,6 +184,9 @@ def render_process(snapshot: MonitoringSnapshot, *, width: int = 120) -> str:
         f"Last cycle {float(s.get('elapsed_s', 0) or 0):.2f}s | Failures {s.get('worker_failures', 0)}",
         f"Block {s.get('block','--')} | Head {s.get('chain_head','--')} | Lag {s.get('block_lag','--')} | "
         f"RPC {s.get('rpc_endpoint') or '--'}",
+        f"Timing catalog {float(s.get('catalog_ms', 0) or 0):.0f}ms | "
+        f"scan {float(s.get('scan_ms', 0) or 0):.0f}ms | "
+        f"verify {float(s.get('verify_ms', 0) or 0):.0f}ms",
         _rule("P&L TELEMETRY", width),
         f"Session simulated realized {_money(snapshot.pnl.session_realized)} | "
         f"Today {_money(snapshot.pnl.day_realized)} | All-time {_money(snapshot.pnl.realized_total)}",
@@ -147,13 +214,14 @@ def _draw(stdscr, text: str) -> None:
     height, width = stdscr.getmaxyx()
     for row, line in enumerate(text.splitlines()[:max(0, height - 1)]):
         try:
-            stdscr.addnstr(row, 0, line, max(1, width - 1))
+            stdscr.addnstr(row, 0, line, max(1, width - 1), _line_attr(line))
         except curses.error:
             pass
     stdscr.refresh()
 
 
 def _curses_loop(stdscr, args) -> None:
+    _init_colors()
     try:
         curses.curs_set(0)
     except curses.error:

@@ -1,7 +1,9 @@
 import unittest
 
 from zero.swarm import RouteKey, TokenInfo
-from zero.swarm_batch import discover_uniswap_routes_batched
+from zero.swarm_batch import (
+    discover_uniswap_routes_batched, discover_uniswap_routes_many_batched,
+)
 
 
 BASE = TokenInfo("BASE", "0x" + "11" * 20, 18, 2500.0)
@@ -75,6 +77,43 @@ class TestBatchedUniswapDiscovery(unittest.TestCase):
         self.assertEqual(first["block"], 321)
         self.assertEqual(first["base_symbol"], "BASE")
         self.assertEqual(first["quote_symbol"], "QUOTE")
+
+    def test_multiple_pairs_share_one_pinned_factory_batch(self):
+        base2 = TokenInfo("BASE2", "0x" + "66" * 20, 18, 10.0)
+        quote2 = TokenInfo("QUOTE2", "0x" + "77" * 20, 6, 1.0)
+        registry = {"BASE": BASE, "QUOTE": QUOTE,
+                    "BASE2": base2, "QUOTE2": quote2}
+
+        class ManyRpc(FakeRpc):
+            def batch_eth_call(self, calls, *, block="latest", max_batch=100):
+                self.batches.append((list(calls), block, max_batch))
+                out = []
+                pair_pools = ((POOL_100, POOL_3000),
+                              ("0x" + "88" * 20, "0x" + "99" * 20))
+                for index, (_, data) in enumerate(calls):
+                    fee = int(data[-64:], 16)
+                    first, second = pair_pools[index // 4]
+                    mapping = {100: first, 3000: second}
+                    out.append(abi_address(mapping[fee]) if fee in mapping
+                               else abi_address("0x0"))
+                return out
+
+        engine = FakeEngine()
+        engine.rpc = ManyRpc()
+        routes = discover_uniswap_routes_many_batched(
+            engine, [("BASE", "QUOTE"), ("BASE2", "QUOTE2")],
+            registry, 654, [100, 500, 3000, 10000], max_batch=100)
+
+        self.assertEqual(len(engine.rpc.batches), 1)
+        calls, block, max_batch = engine.rpc.batches[0]
+        self.assertEqual(block, 654)
+        self.assertEqual(max_batch, 100)
+        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(routes), 4)
+        self.assertEqual(
+            {(r["base_symbol"], r["quote_symbol"]) for r in routes},
+            {("BASE", "QUOTE"), ("BASE2", "QUOTE2")},
+        )
 
     def test_missing_registry_symbol_never_calls_rpc(self):
         engine = FakeEngine()

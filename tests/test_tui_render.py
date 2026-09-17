@@ -1,7 +1,7 @@
 import unittest
 
 from zero.tui_data import MonitoringSnapshot, PnlSummary, ProcessInfo, StrategyPnl
-from zero.tui import render_control, render_process
+from zero.tui import _line_color_role, render_control, render_process
 
 
 class TestTuiRendering(unittest.TestCase):
@@ -56,6 +56,13 @@ class TestTuiRendering(unittest.TestCase):
         self.assertIn("PROCESS ALIVE", text)
         self.assertIn("PID 4242", text)
         self.assertIn("CPU/RAM unavailable", text)
+
+    def test_line_color_roles_make_health_and_errors_visually_distinct(self):
+        self.assertEqual(_line_color_role("PROCESS ALIVE | PID 4242"), "good")
+        self.assertEqual(_line_color_role("PROCESS NOT FOUND"), "bad")
+        self.assertEqual(_line_color_role("RPC Error: 403 Forbidden"), "bad")
+        self.assertEqual(_line_color_role(" ZERO CONTROL FLOOR ----------------"), "accent")
+        self.assertEqual(_line_color_role("Fork attempts 0 | Passed 0 | Failed 0"), "normal")
 
     def test_process_monitor_separates_process_alive_from_cycle_age(self):
         text = render_process(self.snapshot(), width=110)

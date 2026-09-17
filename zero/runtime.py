@@ -30,6 +30,9 @@ class RuntimeStatus:
     fork_passed: int = 0
     fork_failed: int = 0
     elapsed_s: float = 0.0
+    catalog_ms: float = 0.0
+    scan_ms: float = 0.0
+    verify_ms: float = 0.0
     consecutive_errors: int = 0
     last_error: str | None = None
     rpc_endpoint: str | None = None
@@ -119,6 +122,9 @@ class RuntimeMonitor:
             fork_passed=int(result.get("fork_verifications_passed", 0) or 0),
             fork_failed=int(result.get("fork_verifications_failed", 0) or 0),
             elapsed_s=float(result.get("elapsed_s", 0.0) or 0.0),
+            catalog_ms=float(result.get("catalog_ms", 0.0) or 0.0),
+            scan_ms=float(result.get("scan_ms", 0.0) or 0.0),
+            verify_ms=float(result.get("verify_ms", 0.0) or 0.0),
             consecutive_errors=0,
             last_error=None,
             rpc_endpoint=rpc_endpoint or self.status.rpc_endpoint,

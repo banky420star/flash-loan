@@ -84,6 +84,48 @@ def build_token_registry_batched(engine, block: int, *,
     return registry
 
 
+def refresh_token_prices_batched(engine, block: int,
+                                 tokens: dict[str, TokenInfo], *,
+                                 oracle: str,
+                                 max_batch: int = 100) -> dict[str, TokenInfo]:
+    """Refresh only oracle prices for cached static token metadata."""
+    block = int(block)
+    price_selector = selector_hex("getAssetPrice(address)")
+    items = list(tokens.items())
+    calls = [
+        (oracle, price_selector + encode_address(token.address)[2:])
+        for _, token in items
+    ]
+    if not calls:
+        return {}
+    tolerant = getattr(engine.rpc, "batch_eth_call_results", None)
+    if tolerant is None:
+        replies = engine.rpc.batch_eth_call(
+            calls, block=block, max_batch=max_batch)
+    else:
+        replies = tolerant(calls, block=block, max_batch=max_batch)
+    if len(replies) != len(calls):
+        raise ValueError("incomplete batched token price reply")
+
+    refreshed: dict[str, TokenInfo] = {}
+    for (symbol, token), raw in zip(items, replies):
+        if isinstance(raw, RpcError):
+            continue
+        try:
+            price_usd = _decode_uint(raw) / 1e8
+            if price_usd <= 0:
+                raise ValueError("invalid token price")
+        except Exception:
+            continue
+        refreshed[symbol] = TokenInfo(
+            symbol=token.symbol,
+            address=token.address,
+            decimals=int(token.decimals),
+            price_usd=float(price_usd),
+        )
+    return refreshed
+
+
 def discover_uniswap_routes_batched(engine, pair: tuple[str, str],
                                     registry: dict[str, TokenInfo], block: int,
                                     fee_tiers: list[int], *,
@@ -155,6 +197,95 @@ def discover_uniswap_routes_batched(engine, pair: tuple[str, str],
                 "quote_price_usd": quote.price_usd,
                 "pools": [pool_a, pool_b],
             })
+    return routes
+
+
+def discover_uniswap_routes_many_batched(
+        engine, pairs: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+        registry: dict[str, TokenInfo], block: int, fee_tiers: list[int], *,
+        max_batch: int = 100) -> list[dict]:
+    """Discover V3 cycles for many pairs with one pinned factory batch."""
+    block = int(block)
+    factory = engine.config["uniswap_v3_factory"]
+    selector = selector_hex("getPool(address,address,uint24)")
+    ordered_pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    metadata: list[tuple[tuple[str, str], TokenInfo, TokenInfo, int]] = []
+    calls: list[tuple[str, str]] = []
+
+    for raw_pair in pairs:
+        pair = (str(raw_pair[0]), str(raw_pair[1]))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        base = registry.get(pair[0])
+        quote = registry.get(pair[1])
+        if base is None or quote is None:
+            continue
+        ordered_pairs.append(pair)
+        for raw_fee in fee_tiers:
+            fee = int(raw_fee)
+            data = (
+                selector
+                + encode_address(base.address)[2:]
+                + encode_address(quote.address)[2:]
+                + encode_uint(fee)[2:]
+            )
+            calls.append((factory, data))
+            metadata.append((pair, base, quote, fee))
+
+    if not calls:
+        return []
+    replies = engine.rpc.batch_eth_call(
+        calls, block=block, max_batch=max_batch)
+    if len(replies) != len(calls):
+        raise ValueError("incomplete batched multi-pair pool discovery reply")
+
+    pools_by_pair: dict[tuple[str, str], list[dict]] = {
+        pair: [] for pair in ordered_pairs
+    }
+    tokens_by_pair: dict[tuple[str, str], tuple[TokenInfo, TokenInfo]] = {}
+    for (pair, base, quote, fee), raw in zip(metadata, replies):
+        tokens_by_pair[pair] = (base, quote)
+        if not raw:
+            continue
+        pool_int = int.from_bytes(raw[:32], "big")
+        if pool_int == 0:
+            continue
+        pool_address = "0x" + pool_int.to_bytes(20, "big").hex()
+        pools_by_pair[pair].append(
+            _pool_config(base, quote, pool_address, fee))
+
+    routes: list[dict] = []
+    for pair in ordered_pairs:
+        base, quote = tokens_by_pair[pair]
+        base_symbol, quote_symbol = pair
+        pools = pools_by_pair[pair]
+        for i, pool_a in enumerate(pools):
+            for j, pool_b in enumerate(pools):
+                if i == j:
+                    continue
+                key = RouteKey(
+                    chain_id=int(engine.config["chain_id"]),
+                    base=base.address, quote=quote.address,
+                    pool_a=pool_a["address"], pool_b=pool_b["address"],
+                    fee_a=pool_a["fee_tier"], fee_b=pool_b["fee_tier"],
+                    direction="base-to-quote-to-base",
+                )
+                routes.append({
+                    "block": block, "route_id": key.id,
+                    "name": (
+                        f"{base_symbol}->{quote_symbol} {pool_a['fee_percent']}% | "
+                        f"{quote_symbol}->{base_symbol} {pool_b['fee_percent']}%"
+                    ),
+                    "base_symbol": base_symbol, "quote_symbol": quote_symbol,
+                    "base": base.address, "quote": quote.address,
+                    "base_decimals": base.decimals,
+                    "quote_decimals": quote.decimals,
+                    "base_price_usd": base.price_usd,
+                    "quote_price_usd": quote.price_usd,
+                    "pools": [pool_a, pool_b],
+                })
     return routes
 
 

@@ -22,6 +22,9 @@ class TestRuntimeProgress(unittest.TestCase):
                 "worker_failures": 0,
                 "positive_net": 0,
                 "elapsed_s": 11.0,
+                "catalog_ms": 120.0,
+                "scan_ms": 10800.0,
+                "verify_ms": 80.0,
             }, chain_head=505, rpc_endpoint="rpc-a")
             with open(path) as handle:
                 raw = json.load(handle)
@@ -35,3 +38,6 @@ class TestRuntimeProgress(unittest.TestCase):
         self.assertEqual(completed.cycle_phase, "sleeping")
         self.assertEqual(completed.last_cycle_completed_at, 112.0)
         self.assertEqual(raw["process_pid"], 4242)
+        self.assertEqual(raw["catalog_ms"], 120.0)
+        self.assertEqual(raw["scan_ms"], 10800.0)
+        self.assertEqual(raw["verify_ms"], 80.0)

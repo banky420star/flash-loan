@@ -4,7 +4,9 @@ import unittest
 from zero.keccak import selector_hex
 from zero.rpc import Rpc
 from zero.swarm import TokenInfo
-from zero.swarm_batch import build_token_registry_batched
+from zero.swarm_batch import (
+    build_token_registry_batched, refresh_token_prices_batched,
+)
 
 
 TOKEN_A = "0x" + "11" * 20
@@ -124,6 +126,26 @@ class TestBatchedTokenRegistry(unittest.TestCase):
         self.assertEqual(registry["TOKA"], TokenInfo(
             symbol="TOKA", address=TOKEN_A.lower(), decimals=18,
             price_usd=2500.0))
+
+    def test_price_refresh_preserves_static_metadata_and_uses_one_pinned_batch(self):
+        engine = FakeEngine()
+        static = {
+            "TOKA": TokenInfo("TOKA", TOKEN_A.lower(), 18, 0.0),
+            "TOKB": TokenInfo("TOKB", TOKEN_B.lower(), 6, 0.0),
+        }
+        refreshed = refresh_token_prices_batched(
+            engine, 124, static, oracle=ORACLE, max_batch=100)
+
+        self.assertEqual(len(engine.rpc.batches), 1)
+        calls, block, max_batch = engine.rpc.batches[0]
+        self.assertEqual(block, 124)
+        self.assertEqual(max_batch, 100)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(refreshed["TOKA"], TokenInfo(
+            "TOKA", TOKEN_A.lower(), 18, 2500.0))
+        self.assertEqual(refreshed["TOKB"], TokenInfo(
+            "TOKB", TOKEN_B.lower(), 6, 1.0))
+        self.assertEqual(engine.aave.calls, [])
 
     def test_one_rpc_member_error_skips_only_that_token(self):
         transport = MemberErrorTransport()

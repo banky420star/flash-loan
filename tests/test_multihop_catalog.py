@@ -42,6 +42,7 @@ class TestMultiHopCatalog(unittest.TestCase):
         cfg['swarm']['adaptive_reserve'] = {'enabled': False}
         cfg['swarm']['multihop_enabled'] = True
         cfg['swarm']['multihop_max_routes_per_pair'] = 7
+        cfg['swarm']['executable_routes_only'] = False
         registry = {
             'USDC': TokenInfo('USDC', A, 6, 1.0),
             'WETH': TokenInfo('WETH', B, 18, 2000.0),
@@ -66,7 +67,7 @@ class TestMultiHopCatalog(unittest.TestCase):
             ledger = Ledger(os.path.join(tmp, 'ledger.db'))
             supervisor = PnlSwarmSupervisor(engine, cfg, ledger)
             with patch('zero.pnl.build_token_registry_batched', return_value=registry), \
-                 patch('zero.pnl.discover_uniswap_routes_batched', return_value=[]), \
+                 patch('zero.pnl.discover_uniswap_routes_many_batched', return_value=[]), \
                  patch('zero.pnl.build_venue_registry', return_value={}), \
                  patch('zero.pnl.discover_route_configs', return_value=multidex), \
                  patch('zero.pnl.build_multihop_route_configs', return_value=multihop) as build_mh, \
