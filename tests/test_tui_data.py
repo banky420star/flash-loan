@@ -40,6 +40,8 @@ class TestTuiPnlData(unittest.TestCase):
 
         self.assertAlmostEqual(pnl.realized_total, 2.30)
         self.assertAlmostEqual(pnl.predicted_total, 3.50)
+        self.assertAlmostEqual(pnl.day_realized, 2.30)
+        self.assertAlmostEqual(pnl.day_predicted, 3.50)
         self.assertAlmostEqual(pnl.session_realized, 1.50)
         self.assertEqual(pnl.measured_successes, 2)
         self.assertEqual(pnl.execution_reverts, 1)
@@ -53,6 +55,19 @@ class TestTuiPnlData(unittest.TestCase):
         self.assertEqual(info.elapsed_s, 3723)
         self.assertEqual(info.state, "S")
         self.assertIn("zero.cli swarm", info.command)
+
+    def test_snapshot_finds_swarm_when_legacy_status_has_no_pid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = os.path.join(tmp, "status.json")
+            with open(status_path, "w") as handle:
+                json.dump({"heartbeat_at": 190.0}, handle)
+            fake = ProcessInfo(777, 1, 3.0, 0.1, 10, "S", "zero swarm")
+            snap = load_monitoring_snapshot(
+                status_path=status_path, ledger_path=os.path.join(tmp, "missing.db"),
+                log_path=os.path.join(tmp, "missing.log"), now=200.0,
+                process_finder=lambda: 777, process_reader=lambda pid: fake)
+        self.assertTrue(snap.process_alive)
+        self.assertEqual(snap.process.pid, 777)
 
     def test_snapshot_combines_status_process_pnl_and_error_log(self):
         with tempfile.TemporaryDirectory() as tmp:

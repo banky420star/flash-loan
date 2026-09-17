@@ -365,6 +365,31 @@ cp .env.example .env
 ./scripts/zero_dev.sh health
 ```
 
+### Terminal monitoring dashboards
+
+ZERO includes two read-only terminal dashboards. They do not call chain RPC directly,
+do not hold signer credentials, and closing them does not stop the swarm.
+
+Control Floor with swarm state, recent fork outcomes, errors, and simulated P&L:
+
+```bash
+./scripts/zero_tui.sh
+# or: ./scripts/zero_dev.sh tui
+```
+
+Process Monitor with PID/CPU/RAM, heartbeat/cycle age, RPC state, error stream,
+and live log tail:
+
+```bash
+./scripts/zero_process_tui.sh
+# or: ./scripts/zero_dev.sh process-tui
+```
+
+Keys in either dashboard: `1` Control Floor, `2` Process Monitor, `p` pause the
+display only, `r` force refresh, and `q` quit the dashboard. P&L shown in the
+dashboard is fork/shadow simulation evidence, **not wallet profit/loss**. Harness
+and infrastructure failures are reported separately from execution evidence.
+
 `ZERO_RPC_URLS` accepts an ordered comma-separated RPC pool. Transport and
 rate-limit failures cool the failing endpoint and fall through to the next
 endpoint; JSON-RPC contract/application errors do not fail over.

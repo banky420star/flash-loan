@@ -24,6 +24,8 @@ class PnlSummary:
     model_error_total: float = 0.0
     session_predicted: float = 0.0
     session_realized: float = 0.0
+    day_predicted: float = 0.0
+    day_realized: float = 0.0
     measured_successes: int = 0
     execution_reverts: int = 0
     invalid_harness: int = 0
@@ -103,6 +105,11 @@ def load_pnl_summary(path: str, *, session_start: float | None = None,
 
     predicted = realized = model_error = 0.0
     session_predicted = session_realized = 0.0
+    day_predicted = day_realized = 0.0
+    current = float(time.time() if now is None else now)
+    local = time.localtime(current)
+    day_start = time.mktime((local.tm_year, local.tm_mon, local.tm_mday,
+                             0, 0, 0, local.tm_wday, local.tm_yday, local.tm_isdst))
     successes = reverts = invalid = infra = 0
     by_strategy: dict[str, list[float]] = {}
     curve: list[float] = []
@@ -126,9 +133,13 @@ def load_pnl_summary(path: str, *, session_start: float | None = None,
         model_error += error
         successes += int(outcome == "measured_success" and bool(success))
         reverts += int(outcome == "execution_revert")
-        if session_start is not None and float(ts or 0.0) >= session_start:
+        row_ts = float(ts or 0.0)
+        if session_start is not None and row_ts >= session_start:
             session_predicted += pred
             session_realized += real
+        if row_ts >= day_start:
+            day_predicted += pred
+            day_realized += real
         bucket = by_strategy.setdefault(str(strategy), [0.0, 0.0, 0.0, 0.0])
         bucket[0] += pred
         bucket[1] += real
@@ -148,6 +159,8 @@ def load_pnl_summary(path: str, *, session_start: float | None = None,
         model_error_total=model_error,
         session_predicted=session_predicted,
         session_realized=session_realized,
+        day_predicted=day_predicted,
+        day_realized=day_realized,
         measured_successes=successes,
         execution_reverts=reverts,
         invalid_harness=invalid,
@@ -190,6 +203,20 @@ def tail_lines(path: str, n: int = 30) -> tuple[str, ...]:
     except OSError:
         return ()
     return tuple(line.rstrip("\n") for line in lines[-max(0, int(n)):])
+
+
+def find_swarm_pid() -> int | None:
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-f", "zero.cli swarm"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pids = [int(value) for value in out.split() if value.isdigit()]
+    return max(pids) if pids else None
 
 
 def read_process_info(pid: int) -> ProcessInfo | None:
@@ -254,10 +281,13 @@ def _recent_opportunities(path: str, n: int = 8) -> tuple[dict, ...]:
 
 def load_monitoring_snapshot(*, status_path: str, ledger_path: str,
                              log_path: str, now: float | None = None,
-                             process_reader=read_process_info) -> MonitoringSnapshot:
+                             process_reader=read_process_info,
+                             process_finder=find_swarm_pid) -> MonitoringSnapshot:
     now = float(time.time() if now is None else now)
     status = load_runtime_status(status_path)
     pid = status.get("process_pid")
+    if pid is None:
+        pid = process_finder()
     process = process_reader(int(pid)) if pid is not None else None
     heartbeat = status.get("heartbeat_at")
     cycle_started = status.get("cycle_started_at")
