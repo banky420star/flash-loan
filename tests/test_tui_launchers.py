@@ -28,6 +28,7 @@ class TestTuiLaunchers(unittest.TestCase):
         self.assertIn("ZERO_RUNTIME_STATUS_PATH", text)
         self.assertIn("ZERO_LOG_PATH", text)
         self.assertIn("python3 -u -m zero.cli swarm", text)
+        self.assertIn('tee -a "$ZERO_LOG_PATH"', text)
 
 
 if __name__ == "__main__":

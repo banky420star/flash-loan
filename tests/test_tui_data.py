@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from zero.tui_data import (ProcessInfo, load_monitoring_snapshot,
                            load_pnl_summary, parse_ps_line)
@@ -48,6 +49,32 @@ class TestTuiPnlData(unittest.TestCase):
         self.assertEqual(pnl.invalid_harness, 1)
         self.assertAlmostEqual(pnl.by_strategy["swarm_liquidation"].realized, 1.50)
 
+    def test_pnl_refresh_uses_sql_aggregates_and_bounded_curve_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ledger.db")
+            conn = sqlite3.connect(path)
+            conn.executescript(SCHEMA)
+            for i in range(120):
+                conn.execute(
+                    "INSERT INTO fork_verifications VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (i + 1, float(i), 500 + i, "swarm_arbitrage", 1, 1,
+                     1.0, 0.5, -0.5, "measured_success", "{}", "now"))
+            conn.commit()
+            conn.close()
+            statements = []
+            original = __import__("zero.tui_data", fromlist=["_readonly_connection"])._readonly_connection
+            def traced(db_path):
+                handle = original(db_path)
+                handle.set_trace_callback(statements.append)
+                return handle
+            with patch("zero.tui_data._readonly_connection", side_effect=traced):
+                pnl = load_pnl_summary(path, session_start=50.0, now=200.0)
+        upper = [statement.upper() for statement in statements]
+        self.assertTrue(any("SUM(" in statement for statement in upper))
+        self.assertTrue(any("LIMIT 80" in statement for statement in upper))
+        self.assertLessEqual(len(pnl.realized_curve), 80)
+        self.assertAlmostEqual(pnl.realized_curve[-1], pnl.realized_total)
+
     def test_ps_parser_handles_standard_macos_row(self):
         info = parse_ps_line("4242 1 12.5 0.3 01:02:03 S python3 -m zero.cli swarm")
         self.assertEqual(info.pid, 4242)
@@ -56,12 +83,29 @@ class TestTuiPnlData(unittest.TestCase):
         self.assertEqual(info.state, "S")
         self.assertIn("zero.cli swarm", info.command)
 
+    def test_stale_reused_status_pid_falls_back_to_real_swarm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = os.path.join(tmp, "status.json")
+            with open(status_path, "w") as handle:
+                json.dump({"process_pid": 4242, "process_started_at": 100.0,
+                           "heartbeat_at": 190.0}, handle)
+            unrelated = ProcessInfo(4242, 1, 0.1, 0.1, 100, "S", "unrelated worker")
+            real = ProcessInfo(777, 1, 4.0, 0.2, 20, "S", "python -m zero.cli swarm")
+            def reader(pid):
+                return unrelated if pid == 4242 else real
+            snap = load_monitoring_snapshot(
+                status_path=status_path, ledger_path=os.path.join(tmp, "missing.db"),
+                log_path=os.path.join(tmp, "missing.log"), now=200.0,
+                process_finder=lambda: 777, process_reader=reader)
+        self.assertTrue(snap.process_alive)
+        self.assertEqual(snap.process.pid, 777)
+
     def test_snapshot_finds_swarm_when_legacy_status_has_no_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
             status_path = os.path.join(tmp, "status.json")
             with open(status_path, "w") as handle:
                 json.dump({"heartbeat_at": 190.0}, handle)
-            fake = ProcessInfo(777, 1, 3.0, 0.1, 10, "S", "zero swarm")
+            fake = ProcessInfo(777, 1, 3.0, 0.1, 10, "S", "python -m zero.cli swarm")
             snap = load_monitoring_snapshot(
                 status_path=status_path, ledger_path=os.path.join(tmp, "missing.db"),
                 log_path=os.path.join(tmp, "missing.log"), now=200.0,
@@ -88,7 +132,7 @@ class TestTuiPnlData(unittest.TestCase):
                            "heartbeat_at": 190.0, "block": 500, "chain_head": 505}, handle)
             with open(log_path, "w") as handle:
                 handle.write("normal line\nRPC Error: 403 Forbidden\n")
-            fake = ProcessInfo(4242, 1, 25.0, 0.4, 3600, "S", "zero swarm")
+            fake = ProcessInfo(4242, 1, 25.0, 0.4, 100, "S", "python -m zero.cli swarm")
             snap = load_monitoring_snapshot(
                 status_path=status_path, ledger_path=ledger, log_path=log_path,
                 now=200.0, process_reader=lambda pid: fake)

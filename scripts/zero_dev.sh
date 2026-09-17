@@ -30,7 +30,10 @@ case "${1:-once}" in
   doctor) python3 -m zero.cli doctor ;;
   health) python3 -m zero.cli health --status "$ZERO_RUNTIME_STATUS_PATH" ;;
   once) python3 -m zero.cli swarm-once --ledger "$ZERO_LEDGER_PATH" ;;
-  run) python3 -u -m zero.cli swarm --interval "$ZERO_SWARM_INTERVAL" --ledger "$ZERO_LEDGER_PATH" ;;
+  run)
+    mkdir -p "$(dirname "$ZERO_LOG_PATH")"
+    python3 -u -m zero.cli swarm --interval "$ZERO_SWARM_INTERVAL" --ledger "$ZERO_LEDGER_PATH" 2>&1 | tee -a "$ZERO_LOG_PATH"
+    ;;
   tui) python3 -m zero.tui control ;;
   process-tui) python3 -m zero.tui process ;;
   test)
