@@ -22,6 +22,7 @@ from dataclasses import fields
 import json
 import os
 import sys
+import threading
 import time
 
 from .aave import AaveV3, bucket_for
@@ -113,6 +114,33 @@ def _runtime_monitor(cfg: dict) -> RuntimeMonitor:
     path = (os.environ.get("ZERO_RUNTIME_STATUS_PATH", "").strip()
             or cfg.get("runtime", {}).get("status_path", "run/zero-status.json"))
     return RuntimeMonitor(path)
+
+
+def _runtime_heartbeat_loop(monitor: RuntimeMonitor, stop_event, *,
+                            interval: float = 5.0) -> None:
+    while not stop_event.wait(interval):
+        try:
+            monitor.heartbeat()
+        except Exception:
+            pass
+
+
+def _start_runtime_heartbeat(monitor: RuntimeMonitor, *, interval: float = 5.0):
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_runtime_heartbeat_loop,
+        args=(monitor, stop),
+        kwargs={"interval": interval},
+        name="zero-runtime-heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    return stop, thread
+
+
+def _stop_runtime_heartbeat(stop, thread) -> None:
+    stop.set()
+    thread.join(timeout=1.0)
 
 
 def _runtime_endpoint(supervisor) -> str | None:
@@ -260,8 +288,14 @@ def cmd_swarm_once(args):
     supervisor = _swarm_supervisor(getattr(args, "ledger", None))
     cfg = getattr(supervisor, "config", None) or load_config()
     monitor = _runtime_monitor(cfg)
-    result = supervisor.run_block()
-    _record_runtime_cycle(supervisor, monitor, result)
+    monitor.record_process_start(pid=os.getpid())
+    monitor.record_cycle_start(rpc_endpoint=_runtime_endpoint(supervisor))
+    stop, thread = _start_runtime_heartbeat(monitor)
+    try:
+        result = supervisor.run_block()
+        _record_runtime_cycle(supervisor, monitor, result)
+    finally:
+        _stop_runtime_heartbeat(stop, thread)
     print(json.dumps(result, indent=2, default=str))
     return 0
 
@@ -270,30 +304,36 @@ def cmd_swarm(args):
     supervisor = _swarm_supervisor(getattr(args, "ledger", None))
     cfg = getattr(supervisor, "config", None) or load_config()
     monitor = _runtime_monitor(cfg)
-    while True:
-        try:
-            result = supervisor.run_block()
-            _record_runtime_cycle(supervisor, monitor, result)
-            print(
-                f"block {result['block']} "
-                f"workers={result['active_workers']} "
-                f"routes={result['routes_scanned']} "
-                f"positive={result['positive_net']} "
-                f"best_net={result['best_expected_net']} "
-                f"fork={result['fork_verifications_passed']}/"
-                f"{result['fork_verifications_attempted']} "
-                f"failures={result['worker_failures']} "
-                f"({result['elapsed_s']:.2f}s)"
-            )
-        except KeyboardInterrupt:
-            return 0
-        except Exception as exc:
-            monitor.record_error(exc, rpc_endpoint=_runtime_endpoint(supervisor))
-            print(f"swarm cycle error: {type(exc).__name__}: {exc}")
-        try:
-            time.sleep(args.interval)
-        except KeyboardInterrupt:
-            return 0
+    monitor.record_process_start(pid=os.getpid())
+    stop, thread = _start_runtime_heartbeat(monitor)
+    try:
+        while True:
+            try:
+                monitor.record_cycle_start(rpc_endpoint=_runtime_endpoint(supervisor))
+                result = supervisor.run_block()
+                _record_runtime_cycle(supervisor, monitor, result)
+                print(
+                    f"block {result['block']} "
+                    f"workers={result['active_workers']} "
+                    f"routes={result['routes_scanned']} "
+                    f"positive={result['positive_net']} "
+                    f"best_net={result['best_expected_net']} "
+                    f"fork={result['fork_verifications_passed']}/"
+                    f"{result['fork_verifications_attempted']} "
+                    f"failures={result['worker_failures']} "
+                    f"({result['elapsed_s']:.2f}s)"
+                )
+            except KeyboardInterrupt:
+                return 0
+            except Exception as exc:
+                monitor.record_error(exc, rpc_endpoint=_runtime_endpoint(supervisor))
+                print(f"swarm cycle error: {type(exc).__name__}: {exc}")
+            try:
+                time.sleep(args.interval)
+            except KeyboardInterrupt:
+                return 0
+    finally:
+        _stop_runtime_heartbeat(stop, thread)
 
 
 def cmd_health(args):
