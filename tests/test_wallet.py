@@ -115,6 +115,21 @@ class TestWallet(unittest.TestCase):
         unsigned, y_parity, r, s = _decode_legacy_tx(raw, 42161)
         self.assertNotEqual(recover_signer(unsigned, y_parity, r, s), addr_b)
 
+    def test_deploy_tx_creates_contract(self):
+        # to=None must produce a contract-creation payload whose signer
+        # recovers correctly (empty to encodes as 0x80).
+        key = generate_private_key()
+        address = private_key_to_address(key)
+        raw = sign_transaction(key, nonce=3, gas_price_gwei=0.01,
+                               gas_limit=2_000_000, to=None, value_wei=0,
+                               data=bytes.fromhex("6080"),
+                               chain_id=42161)
+        payload = bytes.fromhex(raw[2:])
+        unsigned, y_parity, r, s = _decode_legacy_tx(raw, 42161)
+        self.assertEqual(recover_signer(unsigned, y_parity, r, s), address)
+        # the recipient field must be the empty string (0x80) in the payload
+        self.assertIn(b"\x80\x82`", payload[1:20])
+
     def test_key_generation_bounds(self):
         for _ in range(16):
             key = generate_private_key()

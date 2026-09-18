@@ -1,0 +1,7 @@
+{
+  "max_notional_usd": 500,
+  "min_net_usd": 5.0,
+  "daily_gas_cap_usd": 10.0,
+  "note": "Conservative first-traffic caps (set 2026-09-18). Raise only after a cycle realizes positive net on-chain.",
+  "kill_switch_path": "run/KILL"
+}
