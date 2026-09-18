@@ -38,7 +38,7 @@ def scan_liquidation_watchlist(engine, config: dict, context,
     # Cheap pinned batch of getUserAccountData for the whole watchlist: only
     # borrowers inside the hot band get the full multi-call state build, so
     # an idle watchlist costs one batch instead of one scan per borrower.
-    hot_band = float(liq_cfg.get('pre_filter_hf', 1.15))
+    hot_band = float(liq_cfg.get('pre_filter_hf', 1.0))
     pool = engine.aave.pool_address(block=context.block)
     data_calls = [(pool, selector_hex('getUserAccountData(address)')
                    + encode_address(b)[2:]) for b in borrowers]
@@ -57,7 +57,7 @@ def scan_liquidation_watchlist(engine, config: dict, context,
             # Pre-filter failed: fall back to scanning everyone below.
             hfs = {b: None for b in borrowers}
     borrowers = [b for b in borrowers
-                 if hfs[b] is None or hfs[b] <= hot_band]
+                 if hfs[b] is None or hfs[b] < hot_band]
 
     candidates: list[SwarmCandidate] = []
     errors: list[dict] = []

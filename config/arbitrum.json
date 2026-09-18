@@ -313,7 +313,8 @@
       "0x10f31b9eea4aba7e45fb54ae29d9df067a9ba839",
       "0x0c20f54a8f5b01dc6f96b5a8dcc5e9ff9674e06f"
     ],
-    "min_watch_debt_usd": 100
+    "min_watch_debt_usd": 100,
+    "pre_filter_hf": 1.0
   },
   "venues": {
     "uniswap_v3": {

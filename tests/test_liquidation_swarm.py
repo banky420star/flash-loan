@@ -90,7 +90,7 @@ class TestWatchlistPreFilter(unittest.TestCase):
             calldata_by_borrower[calldata] = _account_data_words(
                 [10**12, 10**12, 0, 1, 0, int(hf)])
         engine = PreFilterEngine(calldata_by_borrower)
-        cfg = {'liquidation': {'borrowers': [hot, cold]}}
+        cfg = {'liquidation': {'borrowers': [hot, cold], 'pre_filter_hf': 1.10}}
         with patch('zero.liquidation_swarm.build_liquidation_state',
                    return_value=make_state(hot)) as state_builder:
             candidates, errors = scan_liquidation_watchlist(
@@ -101,6 +101,23 @@ class TestWatchlistPreFilter(unittest.TestCase):
                    state_builder.call_args_list}
         self.assertEqual(scanned, {hot.lower()})
         self.assertEqual(len(candidates), 1)
+
+    def test_default_full_scan_boundary_skips_non_liquidatable_nearby_account(self):
+        nearby = HOT_USER
+        from zero.keccak import selector_hex
+        from zero.rpc import encode_address
+        calldata = selector_hex('getUserAccountData(address)') + encode_address(nearby)[2:]
+        engine = PreFilterEngine({
+            calldata: _account_data_words([10**12, 10**12, 0, 1, 0, int(1.05 * 10**18)])
+        })
+        cfg = {'liquidation': {'borrowers': [nearby]}}
+        with patch('zero.liquidation_swarm.build_liquidation_state') as state_builder:
+            candidates, errors = scan_liquidation_watchlist(
+                engine, cfg, self.context(), {'uniswap_v3': Adapter()},
+                model_reserve_usd=0.30)
+        self.assertEqual(candidates, [])
+        self.assertEqual(errors, [])
+        state_builder.assert_not_called()
 
     def test_pre_filter_failure_scans_everyone(self):
         class BrokenRpc:
