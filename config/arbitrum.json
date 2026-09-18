@@ -293,7 +293,13 @@
     "multihop_max_routes_per_pair": 2,
     "executable_routes_only": false,
     "static_metadata_refresh_s": 60.0,
-    "route_topology_refresh_s": 30.0
+    "route_topology_refresh_s": 30.0,
+    "ladder_widen_threshold_usd": 1.0,
+    "ladder_widen_sizes_usd": [
+      100,
+      500,
+      2500
+    ]
   },
   "liquidation": {
     "bonus": 0.05,

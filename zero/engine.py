@@ -358,6 +358,21 @@ class ShadowEngine:
                 item = evaluate(usd_size)
                 if item is not None:
                     evaluated.append(item)
+        elif float(probe["expected_net_usd"]) > -float(
+                swarm_cfg.get("ladder_widen_threshold_usd", 1.0)):
+            # Ladder-widening: gas is a fixed cost, so a route that is
+            # slightly negative at the probe size can be positive at larger
+            # notional. Bounded probing of a few rungs above the probe keeps
+            # quote cost down while no longer discarding those routes.
+            widen = [float(v) for v in
+                     swarm_cfg.get("ladder_widen_sizes_usd",
+                                   [100, 500, 2500])]
+            for usd_size in widen:
+                if usd_size <= probe_usd:
+                    continue
+                item = evaluate(usd_size)
+                if item is not None:
+                    evaluated.append(item)
         best = max(evaluated, key=lambda item: item["expected_net_usd"])
         executable = route_execution_ready(route, self.venues)
         positive = float(best["expected_net_usd"]) > 0
