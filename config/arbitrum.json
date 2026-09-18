@@ -369,5 +369,6 @@
   "rpc_cooldown_s": 5.0,
   "runtime": {
     "status_path": "run/zero-status.json"
-  }
+  },
+  "balancer_vault": "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 }

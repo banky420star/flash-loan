@@ -18,6 +18,15 @@ interface IAavePoolZero {
     ) external;
 }
 
+interface IBalancerVaultZero {
+    function flashLoan(
+        address recipient,
+        address[] calldata tokens,
+        uint256[] calldata amounts,
+        bytes calldata userData
+    ) external;
+}
+
 interface ISwapRouter02Zero {
     struct ExactInputSingleParams {
         address tokenIn;
@@ -72,6 +81,7 @@ contract ZeroExecutor {
     error Paused();
     error ActiveRun();
     error InvalidAddress();
+    error InvalidFlashParams();
     error InvalidRecipientMode();
     error UnauthorizedPool();
     error UnauthorizedInitiator();
@@ -95,6 +105,7 @@ contract ZeroExecutor {
 
     address public immutable pool;
     address public immutable owner;
+    address public balancerVault;
 
     mapping(address => bool) public allowedToken;
     mapping(address => bool) public allowedRouter;
@@ -106,8 +117,10 @@ contract ZeroExecutor {
     bool public paused;
 
     bool private active;
+    bool private viaBalancer;
     address private activeAsset;
     uint256 private baselineBalance;
+    uint256 private activeAmount;
     uint256 private requestedMinProfit;
 
     address private constant MSG_SENDER = address(1);
@@ -150,6 +163,16 @@ contract ZeroExecutor {
         emit CallerPermissionChanged(caller, allowed);
     }
 
+    /// @notice Trust a Balancer V2 Vault as a second flash-loan source.
+    /// @dev Balancer charges no premium (feeAmounts arrive 0), which lowers
+    ///      the break-even spread versus the Aave path. The owner pins the
+    ///      vault once; every flash callback still checks msg.sender.
+    function setBalancerVault(address vault) external onlyOwner {
+        if (vault == address(0)) revert InvalidAddress();
+        if (vault == pool) revert InvalidAddress();
+        balancerVault = vault;
+    }
+
     function setMaxLoan(address asset, uint256 amount) external onlyOwner {
         if (asset == address(0)) revert InvalidAddress();
         maxLoan[asset] = amount;
@@ -174,6 +197,42 @@ contract ZeroExecutor {
         address asset, uint256 amount, uint256 minProfit,
         uint256 deadline, Step[] calldata steps
     ) external returns (uint256 realizedProfit) {
+        _beginRun(asset, amount, minProfit, deadline, steps.length);
+
+        IAavePoolZero(pool).flashLoanSimple(
+            address(this), asset, amount, abi.encode(steps), 0
+        );
+
+        realizedProfit = _endRun(asset, minProfit);
+    }
+
+    /// @notice Flash loan from the owner-pinned Balancer Vault (0 premium)
+    ///         instead of Aave, running the same step pipeline.
+    function runBalancer(
+        address asset, uint256 amount, uint256 minProfit,
+        uint256 deadline, Step[] calldata steps
+    ) external returns (uint256 realizedProfit) {
+        address vault = balancerVault;
+        if (vault == address(0)) revert InvalidAddress();
+        _beginRun(asset, amount, minProfit, deadline, steps.length);
+        viaBalancer = true;
+
+        address[] memory tokens = new address[](1);
+        tokens[0] = asset;
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = amount;
+        IBalancerVaultZero(vault).flashLoan(
+            address(this), tokens, amounts, abi.encode(steps)
+        );
+
+        viaBalancer = false;
+        realizedProfit = _endRun(asset, minProfit);
+    }
+
+    function _beginRun(
+        address asset, uint256 amount, uint256 minProfit,
+        uint256 deadline, uint256 stepCount
+    ) private {
         if (!authorizedCaller[msg.sender]) revert NotAuthorizedCaller();
         if (asset == address(0)) revert InvalidAddress();
         if (paused) revert Paused();
@@ -183,27 +242,31 @@ contract ZeroExecutor {
         if (amount == 0 || maxLoan[asset] == 0 || amount > maxLoan[asset]) {
             revert LoanLimitExceeded();
         }
-        if (steps.length > maxSteps) revert TooManySteps();
+        if (stepCount > maxSteps) revert TooManySteps();
 
         baselineBalance = IERC20Zero(asset).balanceOf(address(this));
         activeAsset = asset;
+        activeAmount = amount;
         requestedMinProfit = minProfit;
         active = true;
+    }
 
-        IAavePoolZero(pool).flashLoanSimple(
-            address(this), asset, amount, abi.encode(steps), 0
-        );
-
+    function _endRun(address asset, uint256 minProfit)
+        private returns (uint256 realizedProfit)
+    {
+        address lender = viaBalancer ? balancerVault : pool;
+        viaBalancer = false;
         active = false;
-        _safeApprove(asset, pool, 0);
+        _safeApprove(asset, lender, 0);
         uint256 endingBalance = IERC20Zero(asset).balanceOf(address(this));
         uint256 requiredEnding = baselineBalance + minProfit;
         if (endingBalance < requiredEnding) {
             revert MinimumProfitNotMet(endingBalance, requiredEnding);
         }
         realizedProfit = endingBalance - baselineBalance;
-        emit ExecutionCompleted(asset, amount, realizedProfit, endingBalance);
+        emit ExecutionCompleted(asset, activeAmount, realizedProfit, endingBalance);
         activeAsset = address(0);
+        activeAmount = 0;
         baselineBalance = 0;
         requestedMinProfit = 0;
     }
@@ -214,8 +277,31 @@ contract ZeroExecutor {
     ) external returns (bool) {
         if (msg.sender != pool) revert UnauthorizedPool();
         if (initiator != address(this)) revert UnauthorizedInitiator();
-        if (!active || asset != activeAsset) revert WrongAsset();
+        if (!active || viaBalancer || asset != activeAsset) revert WrongAsset();
+        _runFlashBody(asset, amount, premium, params);
+        return true;
+    }
 
+    /// @notice Balancer V2 Vault flash-loan callback (0 premium).
+    function receiveFlashLoan(
+        address[] calldata tokens,
+        uint256[] calldata amounts,
+        uint256[] calldata feeAmounts,
+        bytes calldata userData
+    ) external {
+        if (msg.sender != balancerVault) revert UnauthorizedPool();
+        if (!active || !viaBalancer) revert WrongAsset();
+        if (tokens.length != 1 || amounts.length != 1 || feeAmounts.length != 1) {
+            revert InvalidFlashParams();
+        }
+        if (tokens[0] != activeAsset) revert WrongAsset();
+        if (feeAmounts[0] != 0) revert InvalidFlashParams();
+        _runFlashBody(tokens[0], amounts[0], 0, userData);
+    }
+
+    function _runFlashBody(
+        address asset, uint256 amount, uint256 premium, bytes calldata params
+    ) private {
         Step[] memory steps = abi.decode(params, (Step[]));
         if (steps.length > maxSteps) revert TooManySteps();
         for (uint256 i = 0; i < steps.length; ++i) {
@@ -229,9 +315,8 @@ contract ZeroExecutor {
         if (currentBalance < requiredBalance) {
             revert MinimumProfitNotMet(currentBalance, requiredBalance);
         }
-        _safeApprove(asset, pool, 0);
-        _safeApprove(asset, pool, amountOwed);
-        return true;
+        _safeApprove(asset, msg.sender, 0);
+        _safeApprove(asset, msg.sender, amountOwed);
     }
 
     function _executeStep(Step memory step) internal {
