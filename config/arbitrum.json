@@ -58,7 +58,7 @@
   },
   "swarm": {
     "enabled": true,
-    "worker_count": 20,
+    "worker_count": 25,
     "manager_count": 4,
     "max_rpc_concurrency": 8,
     "max_rpc_batch": 20,
@@ -149,6 +149,22 @@
               "WETH"
             ],
             "role": "stable-eth-overflow"
+          },
+          {
+            "id": "A6",
+            "pair": [
+              "USDC",
+              "USDt0"
+            ],
+            "role": "stable-overflow"
+          },
+          {
+            "id": "A7",
+            "pair": [
+              "USDC",
+              "DAI"
+            ],
+            "role": "stable-overflow"
           }
         ]
       },
@@ -239,6 +255,14 @@
               "WETH"
             ],
             "role": "lrt-overflow"
+          },
+          {
+            "id": "C6",
+            "pair": [
+              "wstETH",
+              "USDC"
+            ],
+            "role": "lst-route"
           }
         ]
       },
@@ -284,6 +308,22 @@
               "WETH"
             ],
             "role": "dynamic-overflow"
+          },
+          {
+            "id": "D6",
+            "pair": [
+              "ARB",
+              "USDC"
+            ],
+            "role": "majors-route"
+          },
+          {
+            "id": "D7",
+            "pair": [
+              "LINK",
+              "USDC"
+            ],
+            "role": "majors-route"
           }
         ]
       }
