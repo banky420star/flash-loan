@@ -68,7 +68,7 @@ class TestAdaptiveReserveSupervisor(unittest.TestCase):
             result = supervisor.run_block(777)
             ledger.close()
 
-        self.assertEqual(len(seen), 20)
+        self.assertEqual(len(seen), 25)
         self.assertTrue(all(value == seen[0] for value in seen))
         self.assertAlmostEqual(seen[0], 0.20)
         self.assertAlmostEqual(result["adaptive_reserve_usd"], 0.20)
@@ -95,7 +95,7 @@ class TestAdaptiveReserveSupervisor(unittest.TestCase):
             result = supervisor.run_block(777)
             ledger.close()
 
-        self.assertEqual(len(seen), 20)
+        self.assertEqual(len(seen), 25)
         self.assertTrue(all(value == 0.07 for value in seen))
         self.assertAlmostEqual(result["adaptive_reserve_usd"], 0.07)
         self.assertEqual(result["reserve_samples"], 0)

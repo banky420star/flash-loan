@@ -62,8 +62,10 @@ class TestSwarmSupervisor(unittest.TestCase):
             catalog_builder=lambda block, workers: ([], object()),
         )
         result = supervisor.run_block(777)
-        self.assertEqual(result["active_workers"], 20)
-        self.assertEqual(set(seen), {f"{p}{n}" for p in "ABCD" for n in range(1, 6)})
+        self.assertEqual(result["active_workers"], 25)
+        self.assertEqual(set(seen),
+                         {w["id"] for m in cfg["swarm"]["managers"]
+                          for w in m["workers"]})
         self.assertGreater(maximum, 1)
         self.assertLessEqual(maximum, 4)
 
@@ -82,7 +84,7 @@ class TestSwarmSupervisor(unittest.TestCase):
             worker_runner=runner,
             catalog_builder=lambda block, workers: ([], object()),
         ).run_block(777)
-        self.assertEqual(result["active_workers"], 20)
+        self.assertEqual(result["active_workers"], 25)
         self.assertEqual(result["worker_failures"], 1)
         self.assertEqual(result["candidates"], [])
 

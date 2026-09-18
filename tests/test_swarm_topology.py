@@ -11,23 +11,25 @@ class TestSwarmTopology(unittest.TestCase):
         with open(CONFIG_PATH) as f:
             return json.load(f)
 
-    def test_builds_four_managers_and_twenty_unique_workers(self):
+    def test_builds_four_managers_and_declared_workers(self):
         try:
             from zero.swarm import build_topology
         except ImportError as exc:
             self.fail(f"build_topology is missing: {exc}")
 
         cfg = self._load()
+        declared = int(cfg["swarm"]["worker_count"])
         managers, workers = build_topology(cfg)
         self.assertEqual(len(managers), 4)
-        self.assertEqual(len(workers), 20)
+        self.assertEqual(len(workers), declared)
         self.assertEqual(len({m.manager_id for m in managers}), 4)
-        self.assertEqual(len({w.worker_id for w in workers}), 20)
-        self.assertEqual(
-            {w.worker_id for w in workers},
-            {f"{prefix}{n}" for prefix in "ABCD" for n in range(1, 6)},
-        )
-        self.assertTrue(all(len(m.worker_ids) == 5 for m in managers))
+        self.assertEqual(len({w.worker_id for w in workers}), declared)
+        # worker ids must be unique and cover every declared definition
+        self.assertEqual(len({w.worker_id for w in workers}), len(workers))
+        # every declared worker id appears exactly once
+        declared_ids = {w["id"] for m in cfg["swarm"]["managers"]
+                        for w in m["workers"]}
+        self.assertEqual({w.worker_id for w in workers}, declared_ids)
 
     def test_every_worker_belongs_to_exactly_one_declared_manager(self):
         from zero.swarm import build_topology
