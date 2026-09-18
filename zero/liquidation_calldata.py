@@ -3,6 +3,7 @@ from __future__ import annotations
 from .calldata import (
     ExecutionStep,
     MSG_SENDER,
+    SUSHI_V3_ROUTER,
     SWAP_ROUTER_02,
     _exact_input_single,
     _join_words,
@@ -26,8 +27,20 @@ def build_liquidation_steps(candidate: dict, aave_pool: str, router: str,
         raise ValueError('v0.5.7 liquidation execution requires one unwind leg')
     leg = legs[0]
     pool = leg.get('pool') or {}
-    if pool.get('venue_id') != 'uniswap_v3':
-        raise ValueError('v0.5.7 liquidation execution requires Uniswap V3')
+    venue_id = str(pool.get('venue_id'))
+    # Uniswap's SwapRouter02 and Sushi's V3 SwapRouter share the pool
+    # interface but not the calldata: Sushi's Arbitrum router is the
+    # classic V3 SwapRouter whose params carry a deadline (fork-verified
+    # in ZeroSushiV3SwapFork.t.sol).
+    if venue_id == 'uniswap_v3':
+        swap_router = router
+        deadline = None
+    elif venue_id == 'sushi_v3':
+        swap_router = SUSHI_V3_ROUTER
+        deadline = 1 << 128
+    else:
+        raise ValueError(
+            'unwind leg venue is not execution-capable in this release')
 
     debt = str(candidate['base_asset'])
     collateral = str(candidate['collateral_asset'])
@@ -49,7 +62,7 @@ def build_liquidation_steps(candidate: dict, aave_pool: str, router: str,
             encode_address(collateral), encode_address(debt),
             encode_address(borrower), encode_uint(debt_to_cover), encode_uint(0)])
     approve_collateral = _join_words('approve(address,uint256)', [
-        encode_address(router), encode_uint(collateral_in)])
+        encode_address(swap_router), encode_uint(collateral_in)])
     min_swap_out = max(
         required_final,
         unwind_out * (10_000 - int(slippage_bps)) // 10_000,
@@ -61,10 +74,11 @@ def build_liquidation_steps(candidate: dict, aave_pool: str, router: str,
         recipient=MSG_SENDER,
         amount_in=collateral_in,
         amount_out_minimum=min_swap_out,
+        deadline=deadline,
     )
     return [
         ExecutionStep(debt, 0, approve_debt),
         ExecutionStep(aave_pool, 0, liquidation),
         ExecutionStep(collateral, 0, approve_collateral),
-        ExecutionStep(router, 0, swap),
+        ExecutionStep(swap_router, 0, swap),
     ]

@@ -33,6 +33,25 @@ interface ISwapRouter02Zero {
         external payable returns (uint256 amountOut);
 }
 
+// Sushi's Arbitrum V3 router is the classic periphery SwapRouter: same
+// pool interface, but its params carry a deadline and it does NOT map the
+// 0x…1 msg.sender sentinel (tokens sent to the sentinel burn).
+interface ISushiRouterZero {
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 deadline;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    function exactInputSingle(ExactInputSingleParams calldata params)
+        external payable returns (uint256 amountOut);
+}
+
 contract ZeroExecutor {
     enum StepKind { SwapExactInputSingle, AaveLiquidation }
 
@@ -93,6 +112,8 @@ contract ZeroExecutor {
 
     address private constant MSG_SENDER = address(1);
     address private constant ADDRESS_THIS = address(2);
+    address private constant SUSHI_V3_ROUTER =
+        0x8A21F6768C1f8075791D08546Dadf6daA0bE820c;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -230,10 +251,6 @@ contract ZeroExecutor {
         if (!allowedToken[step.tokenIn] || !allowedToken[step.tokenOut]) {
             revert TokenNotAllowed();
         }
-        bytes4 selector = ISwapRouter02Zero.exactInputSingle.selector;
-        if (!allowedSelector[step.target][selector]) {
-            revert SelectorNotAllowed();
-        }
         address recipient;
         if (step.recipientMode == 0) recipient = MSG_SENDER;
         else if (step.recipientMode == 1) recipient = ADDRESS_THIS;
@@ -243,17 +260,44 @@ contract ZeroExecutor {
             _safeApprove(step.tokenIn, step.target, 0);
             _safeApprove(step.tokenIn, step.target, step.amount);
         }
-        uint256 amountOut = ISwapRouter02Zero(step.target).exactInputSingle(
-            ISwapRouter02Zero.ExactInputSingleParams({
-                tokenIn: step.tokenIn,
-                tokenOut: step.tokenOut,
-                fee: step.fee,
-                recipient: recipient,
-                amountIn: step.amount,
-                amountOutMinimum: step.limit,
-                sqrtPriceLimitX96: 0
-            })
-        );
+        uint256 amountOut;
+        if (step.target == SUSHI_V3_ROUTER) {
+            bytes4 sushiSelector = ISushiRouterZero.exactInputSingle.selector;
+            if (!allowedSelector[step.target][sushiSelector]) {
+                revert SelectorNotAllowed();
+            }
+            // Sushi lacks the msg.sender sentinel: both recipient modes
+            // resolve to this executor, which custodies the output for the
+            // flash-loan repay.
+            amountOut = ISushiRouterZero(step.target).exactInputSingle(
+                ISushiRouterZero.ExactInputSingleParams({
+                    tokenIn: step.tokenIn,
+                    tokenOut: step.tokenOut,
+                    fee: step.fee,
+                    recipient: address(this),
+                    deadline: block.timestamp + 300,
+                    amountIn: step.amount,
+                    amountOutMinimum: step.limit,
+                    sqrtPriceLimitX96: 0
+                })
+            );
+        } else {
+            bytes4 selector = ISwapRouter02Zero.exactInputSingle.selector;
+            if (!allowedSelector[step.target][selector]) {
+                revert SelectorNotAllowed();
+            }
+            amountOut = ISwapRouter02Zero(step.target).exactInputSingle(
+                ISwapRouter02Zero.ExactInputSingleParams({
+                    tokenIn: step.tokenIn,
+                    tokenOut: step.tokenOut,
+                    fee: step.fee,
+                    recipient: recipient,
+                    amountIn: step.amount,
+                    amountOutMinimum: step.limit,
+                    sqrtPriceLimitX96: 0
+                })
+            );
+        }
         if (amountOut < step.limit) revert MinimumOutputNotMet();
         if (step.amount > 0) {
             _safeApprove(step.tokenIn, step.target, 0);

@@ -1,6 +1,6 @@
 import unittest
 
-from zero.calldata import SWAP_ROUTER_02
+from zero.calldata import SWAP_ROUTER_02, SUSHI_V3_ROUTER
 from zero.keccak import selector_hex
 from zero.liquidation_calldata import build_liquidation_steps
 
@@ -45,8 +45,21 @@ class TestLiquidationCalldata(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_liquidation_steps(row, POOL, SWAP_ROUTER_02)
 
-    def test_only_direct_uniswap_unwind_is_executable_in_this_release(self):
+    def test_sushi_unwind_targets_sushi_router_with_deadline_struct(self):
         row=candidate(); row['legs'][0]['pool']['venue_id']='sushi_v3'
+        steps=build_liquidation_steps(row, POOL, SWAP_ROUTER_02)
+        self.assertEqual(len(steps),4)
+        self.assertEqual([s.target.lower() for s in steps],
+                         [DEBT.lower(),POOL.lower(),COLL.lower(),
+                          SUSHI_V3_ROUTER.lower()])
+        self.assertTrue(steps[3].data.startswith(selector_hex(
+            'exactInputSingle((address,address,uint24,address,'
+            'uint256,uint256,uint256,uint160))')))
+        # approve of the collateral now targets the Sushi router too
+        self.assertTrue(steps[2].data.startswith(selector_hex('approve(address,uint256)')))
+
+    def test_unsupported_venue_still_rejected(self):
+        row=candidate(); row['legs'][0]['pool']['venue_id']='camelot_v3'
         with self.assertRaises(ValueError):
             build_liquidation_steps(row, POOL, SWAP_ROUTER_02)
 

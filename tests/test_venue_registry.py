@@ -46,12 +46,12 @@ class TestVenueRegistry(unittest.TestCase):
         self.assertNotEqual(uni.id, sushi.id)
         self.assertEqual(uni.address, common["address"])
 
-    def test_only_uniswap_has_execution_encoder_initially(self):
+    def test_execution_encoder_flags_match_config(self):
         registry = build_venue_registry(self.config(), DummyRpc())
         self.assertTrue(registry["uniswap_v3"].exact_quote_supported)
         self.assertTrue(registry["uniswap_v3"].execution_supported)
         self.assertTrue(registry["sushi_v3"].exact_quote_supported)
-        self.assertFalse(registry["sushi_v3"].execution_supported)
+        self.assertTrue(registry["sushi_v3"].execution_supported)
         self.assertTrue(registry["camelot_v3"].exact_quote_supported)
         self.assertFalse(registry["camelot_v3"].execution_supported)
 

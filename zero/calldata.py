@@ -10,9 +10,13 @@ from .rpc import encode_address, encode_uint
 
 
 SWAP_ROUTER_02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"
+# Sushi's Arbitrum V3 router is the classic periphery SwapRouter: same
+# pool interface as SwapRouter02 but its params carry a deadline.
+SUSHI_V3_ROUTER = "0x8A21F6768C1f8075791D08546Dadf6daA0bE820c"
 MSG_SENDER = "0x0000000000000000000000000000000000000001"
 ADDRESS_THIS = "0x0000000000000000000000000000000000000002"
 EXACT_INPUT_SINGLE = "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))"
+EXACT_INPUT_SINGLE_DEADLINE = "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))"
 
 
 @dataclass(frozen=True)
@@ -31,16 +35,24 @@ def _join_words(signature: str, words: list[str]) -> str:
 
 def _exact_input_single(*, token_in: str, token_out: str, fee: int,
                         recipient: str, amount_in: int,
-                        amount_out_minimum: int) -> str:
+                        amount_out_minimum: int,
+                        deadline: int | None = None) -> str:
     if not (0 <= fee < 2 ** 24):
         raise ValueError("fee must fit uint24")
     if amount_in < 0 or amount_out_minimum < 0:
         raise ValueError("swap amounts must be non-negative")
-    return _join_words(EXACT_INPUT_SINGLE, [
+    if deadline is None:
+        signature = EXACT_INPUT_SINGLE
+        extra: list[str] = []
+    else:
+        signature = EXACT_INPUT_SINGLE_DEADLINE
+        extra = [encode_uint(deadline)]
+    return _join_words(signature, [
         encode_address(token_in),
         encode_address(token_out),
         encode_uint(fee),
         encode_address(recipient),
+        *extra,
         encode_uint(amount_in),
         encode_uint(amount_out_minimum),
         encode_uint(0),

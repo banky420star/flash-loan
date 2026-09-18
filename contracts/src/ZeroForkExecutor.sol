@@ -26,7 +26,10 @@ contract ZeroForkExecutor {
         bytes data;
     }
 
+    address private constant MSG_SENDER_SENTINEL = address(1);
+
     error ActiveRun();
+    error InvalidSwapCalldata();
     error InvalidAddress();
     error UnauthorizedPool();
     error UnauthorizedInitiator();
@@ -101,8 +104,9 @@ contract ZeroForkExecutor {
 
         Step[] memory steps = abi.decode(params, (Step[]));
         for (uint256 i = 0; i < steps.length; ++i) {
+            bytes memory data = _resolveSwapRecipient(steps[i].data);
             (bool ok, bytes memory revertData) = steps[i].target.call{value: steps[i].value}(
-                steps[i].data
+                data
             );
             if (!ok) revert StepFailed(i, revertData);
         }
@@ -117,6 +121,30 @@ contract ZeroForkExecutor {
         if (!IERC20Fork(asset).approve(pool, 0)) revert ApprovalFailed();
         if (!IERC20Fork(asset).approve(pool, amountOwed)) revert ApprovalFailed();
         return true;
+    }
+
+    /// @dev Sushi's Arbitrum V3 router (classic periphery SwapRouter) does not
+    ///      map the 0x…1 msg.sender sentinel — tokens sent there burn. Python
+    ///      encodes the unwind leg with the sentinel as a placeholder, so the
+    ///      executor rewrites the recipient word (word 3, both exactInputSingle
+    ///      calldata layouts) to its own address before the call.
+    function _resolveSwapRecipient(bytes memory data)
+        private view returns (bytes memory)
+    {
+        if (data.length < 4 + 4 * 32) return data;
+        bytes4 selector = bytes4(data);
+        // 7-field SwapRouter02 struct and 8-field Sushi deadline struct both
+        // place the recipient at word 3 (byte offset 100).
+        if (selector != 0x04e45aaf && selector != 0x414bf389) return data;
+        uint256 recipientWord;
+        assembly {
+            recipientWord := mload(add(add(data, 0x20), 100))
+        }
+        if (address(uint160(recipientWord)) != MSG_SENDER_SENTINEL) return data;
+        assembly {
+            mstore(add(add(data, 0x20), 100), address())
+        }
+        return data;
     }
 
     receive() external payable {}

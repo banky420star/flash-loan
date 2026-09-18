@@ -349,7 +349,7 @@
         10000
       ],
       "exact_quote_supported": true,
-      "execution_supported": false
+      "execution_supported": true
     },
     "camelot_v3": {
       "enabled": true,
