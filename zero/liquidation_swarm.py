@@ -78,16 +78,28 @@ def scan_liquidation_watchlist(engine, config: dict, context,
                             continue
                         if not bool(getattr(adapter, 'execution_supported', False)):
                             continue
-                        for pool in adapter.discover_pair(
-                                collateral.asset, debt.asset, context.block):
+                        try:
+                            pools = adapter.discover_pair(
+                                collateral.asset, debt.asset, context.block)
+                        except Exception:
+                            # One venue's discovery failure must not blind
+                            # the scan for this borrower's other routes.
+                            continue
+                        for pool in pools:
                             route = UnwindRoute((RouteLeg(
                                 pool, collateral.asset, debt.asset),))
-                            candidate = quote_liquidation(
-                                state, debt.asset, collateral.asset, route,
-                                context.block, venue_registry,
-                                flash_premium_bps=int(context.premium_bps),
-                                gas_usd=Decimal(str(context.gas_usd)),
-                                reserve_usd=Decimal(str(model_reserve_usd)))
+                            try:
+                                candidate = quote_liquidation(
+                                    state, debt.asset, collateral.asset, route,
+                                    context.block, venue_registry,
+                                    flash_premium_bps=int(context.premium_bps),
+                                    gas_usd=Decimal(str(context.gas_usd)),
+                                    reserve_usd=Decimal(str(model_reserve_usd)))
+                            except Exception:
+                                # A single pool's quote failure (reverting
+                                # quoter, transient RPC error) skips that
+                                # pool, not the borrower.
+                                continue
                             if candidate is None:
                                 continue
                             if best is None or candidate.expected_net_usd > best.expected_net_usd:
