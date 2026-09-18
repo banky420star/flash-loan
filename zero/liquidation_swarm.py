@@ -21,6 +21,9 @@ def _route_payload(route: UnwindRoute) -> list[dict]:
 def scan_liquidation_watchlist(engine, config: dict, context,
                                venue_registry: dict[str, object], *,
                                model_reserve_usd: float = 0.0):
+    from .keccak import selector_hex
+    from .rpc import RpcError, decode_uints, encode_address
+
     liq_cfg = config.get('liquidation', {}) or {}
     raw_borrowers = liq_cfg.get('borrowers') or liq_cfg.get('watchlist') or []
     borrowers = []
@@ -31,6 +34,30 @@ def scan_liquidation_watchlist(engine, config: dict, context,
             continue
         seen.add(borrower)
         borrowers.append(borrower)
+
+    # Cheap pinned batch of getUserAccountData for the whole watchlist: only
+    # borrowers inside the hot band get the full multi-call state build, so
+    # an idle watchlist costs one batch instead of one scan per borrower.
+    hot_band = float(liq_cfg.get('pre_filter_hf', 1.15))
+    pool = engine.aave.pool_address(block=context.block)
+    data_calls = [(pool, selector_hex('getUserAccountData(address)')
+                   + encode_address(b)[2:]) for b in borrowers]
+    hfs: dict[str, float | None] = {b: None for b in borrowers}
+    if data_calls:
+        try:
+            for borrower, data in zip(borrowers, engine.rpc.
+                                      batch_eth_call_results(
+                data_calls, block=context.block)):
+                if isinstance(data, RpcError) or not data:
+                    continue
+                words = decode_uints(data)
+                if len(words) >= 6 and words[5] > 0:
+                    hfs[borrower] = words[5] / 1e18
+        except Exception:
+            # Pre-filter failed: fall back to scanning everyone below.
+            hfs = {b: None for b in borrowers}
+    borrowers = [b for b in borrowers
+                 if hfs[b] is None or hfs[b] <= hot_band]
 
     candidates: list[SwarmCandidate] = []
     errors: list[dict] = []

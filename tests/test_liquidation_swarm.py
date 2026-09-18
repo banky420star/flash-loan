@@ -36,7 +36,88 @@ class Adapter:
 
 
 class FakeEngine:
-    aave = object()
+    class aave:
+        @staticmethod
+        def pool_address(block=None):
+            return POOL
+
+    class rpc:
+        @staticmethod
+        def batch_eth_call_results(*args, **kwargs):
+            raise RuntimeError('no batch in fixture')
+
+
+HOT_USER = '0x' + '66' * 20
+
+
+def _account_data_words(words):
+    out = b''
+    for value in words:
+        out += value.to_bytes(32, 'big')
+    return out
+
+
+class PreFilterRpc:
+    def __init__(self, results):
+        self.results = results
+        self.batched = 0
+
+    def batch_eth_call_results(self, calls, block='latest', max_batch=100):
+        self.batched += 1
+        return [self.results[call[1]] for call in calls]
+
+
+class PreFilterEngine:
+    def __init__(self, results):
+        self.aave = type('Aave', (), {'pool_address':
+                         staticmethod(lambda block=None: POOL)})()
+        self.rpc = PreFilterRpc(results)
+
+
+class TestWatchlistPreFilter(unittest.TestCase):
+    def context(self):
+        return ScanContext(777, 'pool', 'oracle', 5, 2000.0, 0.20, {}, {})
+
+    def test_only_hot_band_borrowers_get_full_state_scan(self):
+        cold = '0x' + 'aa' * 20
+        hot = HOT_USER
+        calldata_by_borrower = {}
+        from zero.keccak import selector_hex
+        from zero.rpc import encode_address
+        selector = selector_hex('getUserAccountData(address)')
+        for hf, borrower in ((2.0 * 10**18, cold), (1.05 * 10**18, hot)):
+            calldata = selector + encode_address(borrower)[2:]
+            calldata_by_borrower[calldata] = _account_data_words(
+                [10**12, 10**12, 0, 1, 0, int(hf)])
+        engine = PreFilterEngine(calldata_by_borrower)
+        cfg = {'liquidation': {'borrowers': [hot, cold]}}
+        with patch('zero.liquidation_swarm.build_liquidation_state',
+                   return_value=make_state(hot)) as state_builder:
+            candidates, errors = scan_liquidation_watchlist(
+                engine, cfg, self.context(), {'uniswap_v3': Adapter()},
+                model_reserve_usd=0.30)
+        self.assertEqual(errors, [])
+        scanned = {call.args[1].lower() for call in
+                   state_builder.call_args_list}
+        self.assertEqual(scanned, {hot.lower()})
+        self.assertEqual(len(candidates), 1)
+
+    def test_pre_filter_failure_scans_everyone(self):
+        class BrokenRpc:
+            def batch_eth_call_results(self, *args, **kwargs):
+                raise RuntimeError('batch down')
+
+        engine = PreFilterEngine({})
+        engine.rpc = BrokenRpc()
+        cfg = {'liquidation': {'borrowers': [USER1, USER2]}}
+        with patch('zero.liquidation_swarm.build_liquidation_state',
+                   return_value=make_state(USER2)) as state_builder:
+            candidates, errors = scan_liquidation_watchlist(
+                engine, cfg, self.context(), {'uniswap_v3': Adapter()},
+                model_reserve_usd=0.30)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(state_builder.call_count, 2)
 
 
 class TestLiquidationWatchlist(unittest.TestCase):
