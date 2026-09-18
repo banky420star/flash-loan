@@ -14,11 +14,23 @@ class TestEnvironmentConfig(unittest.TestCase):
             "ZERO_MAX_RPC_CONCURRENCY": "7",
         }
         with patch.dict(os.environ, env, clear=False):
-            cfg = cli.load_config()
+            with patch.dict(os.environ, {"ZERO_RPC_URLS": ""}):
+                cfg = cli.load_config()
         self.assertEqual(cfg["rpc_url"], env["ZERO_RPC_URL"])
         self.assertEqual(cfg["ledger_path"], env["ZERO_LEDGER_PATH"])
         self.assertEqual(cfg["swarm"]["max_rpc_batch"], 12)
         self.assertEqual(cfg["swarm"]["max_rpc_concurrency"], 7)
+
+    def test_explicit_rpc_pool_wins_when_both_rpc_env_vars_are_set(self):
+        env = {
+            "ZERO_RPC_URL": "https://single.example",
+            "ZERO_RPC_URLS": "https://one.example,https://two.example",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            cfg = cli.load_config()
+        self.assertEqual(cfg["rpc_urls"], [
+            "https://one.example", "https://two.example"])
+        self.assertEqual(cfg["rpc_url"], "https://one.example")
 
     def test_rpc_url_list_can_be_overridden_in_order(self):
         env = {

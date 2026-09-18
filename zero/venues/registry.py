@@ -12,7 +12,7 @@ ADAPTER_TYPES = {
 }
 
 
-def build_venue_registry(config: dict, rpc) -> dict[str, object]:
+def build_venue_registry(config: dict, rpc, *, rpc_factory=None) -> dict[str, object]:
     venues = config.get("venues", {}) or {}
     registry = {}
     for venue_id, row in venues.items():
@@ -21,9 +21,10 @@ def build_venue_registry(config: dict, rpc) -> dict[str, object]:
         adapter_type = ADAPTER_TYPES.get(venue_id)
         if adapter_type is None:
             raise ValueError(f"unsupported venue: {venue_id}")
+        venue_rpc = rpc_factory(venue_id, row) if rpc_factory else rpc
         registry[venue_id] = adapter_type(
             venue_id=venue_id,
-            rpc=rpc,
+            rpc=venue_rpc,
             factory=str(row["factory"]),
             router=str(row["router"]),
             quoter=(str(row["quoter"]) if row.get("quoter") else None),

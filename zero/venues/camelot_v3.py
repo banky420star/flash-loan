@@ -23,6 +23,33 @@ class CamelotV3Adapter(VenueAdapter):
         return [PoolRef(self.venue_id, address, first, second,
                         None, "algebra_v3")]
 
+    def discover_pairs(self, pairs: list[tuple[str, str]], block: int, *,
+                       max_batch: int = 100) -> dict[tuple[str, str], list[PoolRef]]:
+        batch_results = getattr(self.rpc, "batch_eth_call_results", None)
+        if not callable(batch_results):
+            return {pair: self.discover_pair(pair[0], pair[1], int(block))
+                    for pair in pairs}
+        calls = []
+        for token_a, token_b in pairs:
+            data = (selector_hex("poolByPair(address,address)")
+                    + encode_address(token_a)[2:]
+                    + encode_address(token_b)[2:])
+            calls.append((self.factory, data))
+        replies = batch_results(calls, block=int(block), max_batch=int(max_batch))
+        found = {pair: [] for pair in pairs}
+        for pair, raw in zip(pairs, replies):
+            if isinstance(raw, Exception):
+                continue
+            address = _address_from_word(raw)
+            if not address:
+                continue
+            token_a, token_b = pair
+            first, second = sorted((token_a.lower(), token_b.lower()),
+                                   key=lambda value: int(value, 16))
+            found[pair].append(PoolRef(
+                self.venue_id, address, first, second, None, "algebra_v3"))
+        return found
+
     def quote_exact_input(self, pool: PoolRef, token_in: str,
                           amount_in: int, block: int) -> VenueQuote:
         if not self.exact_quote_supported or not self.quoter:

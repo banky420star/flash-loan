@@ -62,6 +62,15 @@
     "manager_count": 4,
     "max_rpc_concurrency": 8,
     "max_rpc_batch": 20,
+    "venue_discovery_concurrency": 2,
+    "venue_discovery_timeout_s": 8.0,
+    "venue_discovery_request_timeout_s": 2.0,
+    "venue_discovery_rpc_urls": [
+      "https://arbitrum-one.public.blastapi.io",
+      "https://arb1.arbitrum.io/rpc"
+    ],
+    "venue_discovery_retries": 1,
+    "multidex_max_routes_per_pair": 1,
     "model_reserve_usd": 0.0,
     "adaptive_reserve": {
       "enabled": true,
@@ -280,10 +289,11 @@
       }
     ],
     "multidex_probe_usd": 25,
-    "multihop_enabled": true,
-    "multihop_max_routes_per_pair": 8,
-    "executable_routes_only": true,
-    "static_metadata_refresh_s": 60.0
+    "multihop_enabled": false,
+    "multihop_max_routes_per_pair": 2,
+    "executable_routes_only": false,
+    "static_metadata_refresh_s": 60.0,
+    "route_topology_refresh_s": 30.0
   },
   "liquidation": {
     "bonus": 0.05,
@@ -348,8 +358,8 @@
     }
   },
   "rpc_urls": [
-    "https://arb1.arbitrum.io/rpc",
-    "https://arbitrum-one-rpc.publicnode.com"
+    "https://arbitrum-one.public.blastapi.io",
+    "https://arb1.arbitrum.io/rpc"
   ],
   "rpc_cooldown_s": 5.0,
   "runtime": {

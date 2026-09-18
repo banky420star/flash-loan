@@ -36,9 +36,11 @@ def _block_tag(block: int | str) -> str:
 
 
 class Rpc:
-    def __init__(self, url: str, transport=None, retries: int = 3):
+    def __init__(self, url: str, transport=None, retries: int = 3,
+                 timeout: float = 10.0):
         self.url = url
-        self.transport = transport if transport is not None else UrllibTransport(url)
+        self.transport = (transport if transport is not None
+                          else UrllibTransport(url, timeout=float(timeout)))
         self.retries = retries
         self._id = 0
 

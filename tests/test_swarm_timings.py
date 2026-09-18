@@ -68,6 +68,16 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
     def test_default_catalog_builder_uses_batched_helpers_and_configured_limit(self):
         cfg = self._config()
         engine = FakeEngine()
+        base = "0x" + "11" * 20
+        quote = "0x" + "22" * 20
+        uniswap_seed = {
+            "block": 999, "route_id": "uni-seed",
+            "base": base, "quote": quote,
+            "pools": [{
+                "address": "0x" + "33" * 20,
+                "token0": base, "token1": quote, "fee_tier": 500,
+            }],
+        }
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Ledger(os.path.join(tmp, "ledger.db"))
             supervisor = PnlSwarmSupervisor(engine, cfg, ledger)
@@ -75,18 +85,20 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
             with patch("zero.pnl.build_token_registry_batched", create=True,
                        return_value={}) as registry, \
                  patch("zero.pnl.discover_uniswap_routes_many_batched", create=True,
-                       return_value=[]) as discover, \
+                       return_value=[uniswap_seed]) as discover, \
                  patch("zero.pnl.build_venue_registry", create=True,
-                       return_value={}) as venue_registry, \
-                 patch("zero.pnl.discover_route_configs", create=True,
-                       return_value=[]) as multidex, \
+                       return_value={
+                           "sushi_v3": SimpleNamespace(execution_supported=False),
+                       }) as venue_registry, \
+                 patch("zero.pnl.discover_route_configs_many", create=True,
+                       return_value=([], [])) as multidex, \
                  patch("zero.pnl.build_scan_context_batched", create=True,
                        return_value=context) as scan_context:
                 routes, actual_context = supervisor._build_catalog(
                     999, supervisor.workers)
             ledger.close()
 
-        self.assertEqual(routes, [])
+        self.assertEqual(routes, [uniswap_seed])
         self.assertIs(actual_context, context)
         self.assertEqual(engine.aave.calls, [("pool", 999), ("oracle", 999)])
         self.assertEqual(registry.call_count, 1)
@@ -96,7 +108,8 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
         self.assertEqual(discover.call_count, 1)
         self.assertEqual(discover.call_args.kwargs["max_batch"], 17)
         self.assertEqual(venue_registry.call_count, 1)
-        self.assertGreater(multidex.call_count, 0)
+        self.assertEqual(multidex.call_count, 1)
+        self.assertEqual(multidex.call_args.kwargs["max_batch"], 17)
         self.assertEqual(scan_context.call_count, 1)
         self.assertEqual(scan_context.call_args.kwargs["max_batch"], 17)
         self.assertEqual(scan_context.call_args.kwargs["aave_pool"],
@@ -121,7 +134,7 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
                  patch("zero.pnl.refresh_token_prices_batched",
                        return_value=registry) as price_refresh, \
                  patch("zero.pnl.discover_uniswap_routes_many_batched",
-                       return_value=[]), \
+                       return_value=[]) as route_discovery, \
                  patch("zero.pnl.build_venue_registry", return_value={
                      "uniswap_v3": SimpleNamespace(execution_supported=True),
                  }), \
@@ -134,6 +147,7 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
         self.assertEqual(full_registry.call_count, 1)
         self.assertEqual(price_refresh.call_count, 1)
         self.assertEqual(price_refresh.call_args.args[1], 1000)
+        self.assertEqual(route_discovery.call_count, 1)
         self.assertEqual(engine.aave.calls, [("pool", 999), ("oracle", 999)])
 
     def test_executable_only_hot_path_skips_observe_only_multidex_discovery(self):
@@ -149,7 +163,8 @@ class TestSwarmTimingsAndBatchedWiring(unittest.TestCase):
                  patch("zero.pnl.build_venue_registry", return_value={
                      "uniswap_v3": SimpleNamespace(execution_supported=True),
                  }), \
-                 patch("zero.pnl.discover_route_configs", return_value=[]) as multidex, \
+                 patch("zero.pnl.discover_route_configs_many",
+                       return_value=([], [])) as multidex, \
                  patch("zero.pnl.build_scan_context_batched", return_value=context):
                 routes, actual_context = supervisor._build_catalog(999, supervisor.workers)
             ledger.close()

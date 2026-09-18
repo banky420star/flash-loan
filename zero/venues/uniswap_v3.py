@@ -20,22 +20,44 @@ class UniswapV3Adapter(VenueAdapter):
 
     def discover_pair(self, token_a: str, token_b: str,
                       block: int) -> list[PoolRef]:
+        return self.discover_pairs(
+            [(token_a, token_b)], int(block)).get((token_a, token_b), [])
+
+    def discover_pairs(self, pairs: list[tuple[str, str]], block: int, *,
+                       max_batch: int = 100) -> dict[tuple[str, str], list[PoolRef]]:
         selector = selector_hex("getPool(address,address,uint24)")
-        calls = [(
-            self.factory,
-            selector + encode_address(token_a)[2:]
-            + encode_address(token_b)[2:] + encode_uint(fee)[2:],
-        ) for fee in self.fee_tiers]
-        replies = self.rpc.batch_eth_call(calls, block=int(block))
-        first, second = sorted((token_a.lower(), token_b.lower()),
-                               key=lambda value: int(value, 16))
-        pools = []
-        for fee, raw in zip(self.fee_tiers, replies):
+        calls = []
+        metadata = []
+        for pair in pairs:
+            token_a, token_b = pair
+            for fee in self.fee_tiers:
+                calls.append((
+                    self.factory,
+                    selector + encode_address(token_a)[2:]
+                    + encode_address(token_b)[2:] + encode_uint(fee)[2:],
+                ))
+                metadata.append((pair, int(fee)))
+        found = {pair: [] for pair in pairs}
+        if not calls:
+            return found
+        batch_results = getattr(self.rpc, "batch_eth_call_results", None)
+        if callable(batch_results):
+            replies = batch_results(calls, block=int(block), max_batch=int(max_batch))
+        else:
+            replies = self.rpc.batch_eth_call(
+                calls, block=int(block), max_batch=int(max_batch))
+        for (pair, fee), raw in zip(metadata, replies):
+            if isinstance(raw, Exception):
+                continue
             address = _address_from_word(raw)
-            if address:
-                pools.append(PoolRef(self.venue_id, address, first, second,
-                                     int(fee), "uniswap_v3"))
-        return pools
+            if not address:
+                continue
+            token_a, token_b = pair
+            first, second = sorted((token_a.lower(), token_b.lower()),
+                                   key=lambda value: int(value, 16))
+            found[pair].append(PoolRef(
+                self.venue_id, address, first, second, fee, "uniswap_v3"))
+        return found
 
     def quote_exact_input(self, pool: PoolRef, token_in: str,
                           amount_in: int, block: int) -> VenueQuote:

@@ -15,8 +15,14 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-: "${ZERO_RPC_URL:=https://arb1.arbitrum.io/rpc}"
-: "${ZERO_RPC_URLS:=$ZERO_RPC_URL}"
+if [[ -z "${ZERO_RPC_URLS:-}" ]]; then
+  if [[ -n "${ZERO_RPC_URL:-}" ]]; then
+    ZERO_RPC_URLS="$ZERO_RPC_URL"
+  else
+    ZERO_RPC_URLS="https://arbitrum-one.public.blastapi.io,https://arb1.arbitrum.io/rpc"
+  fi
+fi
+: "${ZERO_RPC_URL:=${ZERO_RPC_URLS%%,*}}"
 : "${ZERO_RPC_COOLDOWN_S:=5}"
 : "${ZERO_LEDGER_PATH:=zero_ledger.db}"
 : "${ZERO_SWARM_INTERVAL:=5}"

@@ -62,14 +62,24 @@ class TestMultiHopCatalog(unittest.TestCase):
             'route_id': 'mh', 'base_symbol': 'USDC', 'quote_symbol': 'WETH',
             'legs': [{}, {}, {}],
         }]
+        uniswap_seed = {
+            'block': 777, 'route_id': 'uni-seed',
+            'base_symbol': 'USDC', 'quote_symbol': 'WETH',
+            'base': A, 'quote': B,
+            'pools': [{
+                'address': P1, 'token0': A, 'token1': B, 'fee_tier': 500,
+            }],
+        }
         engine = FakeEngine()
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Ledger(os.path.join(tmp, 'ledger.db'))
             supervisor = PnlSwarmSupervisor(engine, cfg, ledger)
             with patch('zero.pnl.build_token_registry_batched', return_value=registry), \
-                 patch('zero.pnl.discover_uniswap_routes_many_batched', return_value=[]), \
-                 patch('zero.pnl.build_venue_registry', return_value={}), \
-                 patch('zero.pnl.discover_route_configs', return_value=multidex), \
+                 patch('zero.pnl.discover_uniswap_routes_many_batched', return_value=[uniswap_seed]), \
+                 patch('zero.pnl.build_venue_registry', return_value={
+                     'sushi_v3': type('Adapter', (), {'execution_supported': False})(),
+                 }), \
+                 patch('zero.pnl.discover_route_configs_many', return_value=(multidex, [])), \
                  patch('zero.pnl.build_multihop_route_configs', return_value=multihop) as build_mh, \
                  patch('zero.pnl.build_scan_context_batched', return_value=object()):
                 routes, _ = supervisor._build_catalog(777, supervisor.workers)

@@ -59,6 +59,11 @@ class VenueAdapter:
                       block: int) -> list[PoolRef]:
         raise NotImplementedError
 
+    def discover_pairs(self, pairs: list[tuple[str, str]], block: int, *,
+                       max_batch: int = 100) -> dict[tuple[str, str], list[PoolRef]]:
+        return {pair: self.discover_pair(pair[0], pair[1], int(block))
+                for pair in pairs}
+
     def quote_exact_input(self, pool: PoolRef, token_in: str,
                           amount_in: int, block: int) -> VenueQuote:
         raise NotImplementedError
