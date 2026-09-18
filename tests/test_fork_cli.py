@@ -1,7 +1,35 @@
+import pathlib
 import unittest
 from unittest.mock import patch
 
 from zero.fork_cli import build_status, command_line, run_fork_test
+
+
+FORK_SCRIPTS = [
+    "fork_test.sh",
+    "candidate_fork_test.sh",
+    "live_candidate_fork_test.sh",
+    "liquidation_fork_test.sh",
+    "live_liquidation_fork_test.sh",
+    "hardened_executor_fork_test.sh",
+]
+
+
+class TestForkScriptsResolveFoundry(unittest.TestCase):
+    def test_every_fork_script_sources_foundry_env_before_forge_check(self):
+        scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+        for name in FORK_SCRIPTS:
+            text = (scripts_dir / name).read_text()
+            sourced = text.find("foundry_env.sh")
+            forge_check = text.find("command -v forge")
+            self.assertGreaterEqual(sourced, 0, name)
+            self.assertLess(sourced, forge_check, name)
+
+    def test_foundry_env_helper_prepends_default_install_dir(self):
+        scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+        text = (scripts_dir / "foundry_env.sh").read_text()
+        self.assertIn('$HOME/.foundry/bin/forge', text)
+        self.assertIn('export PATH="$HOME/.foundry/bin:$PATH"', text)
 
 
 class TestForkCliHelpers(unittest.TestCase):

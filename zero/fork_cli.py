@@ -12,6 +12,7 @@ import uuid
 from .fork import (
     AnvilFork, ForkResult, OUTCOME_EXECUTION_REVERT,
     OUTCOME_INFRASTRUCTURE_ERROR, OUTCOME_INVALID_HARNESS,
+    with_foundry_path,
 )
 
 
@@ -35,7 +36,7 @@ def build_status(upstream_rpc: str, block_number: int, port: int = 8545) -> dict
 
 
 def run_fork_test(upstream_rpc: str, block_number: int | None = None) -> int:
-    env = os.environ.copy()
+    env = with_foundry_path()
     env["ARBITRUM_RPC_URL"] = upstream_rpc
     if block_number is not None:
         env["FORK_BLOCK"] = str(block_number)
@@ -64,7 +65,7 @@ def _validate_payload(payload: dict) -> tuple[dict, list, int, str]:
 def _candidate_env(upstream_rpc: str, payload: dict,
                    result_path: str | None = None) -> tuple[dict, dict, int]:
     candidate, steps, block, asset = _validate_payload(payload)
-    env = os.environ.copy()
+    env = with_foundry_path()
     env["ARBITRUM_RPC_URL"] = upstream_rpc
     env["FORK_BLOCK"] = str(block)
     env["ZERO_ASSET"] = asset
@@ -268,7 +269,7 @@ def _validate_liquidation_payload(payload: dict) -> tuple[dict, list, int, str]:
 def _liquidation_env(upstream_rpc: str, payload: dict,
                      result_path: str) -> tuple[dict, dict, int]:
     candidate, steps, block, asset = _validate_liquidation_payload(payload)
-    env = os.environ.copy()
+    env = with_foundry_path()
     env['ARBITRUM_RPC_URL'] = upstream_rpc
     env['FORK_BLOCK'] = str(block)
     env['ZERO_ASSET'] = asset

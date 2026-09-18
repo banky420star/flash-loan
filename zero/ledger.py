@@ -77,11 +77,24 @@ class Ledger:
                 text = detail or ""
                 if "StepFailed(" in text or "MinimumProfitNotMet(" in text:
                     outcome = "execution_revert"
+                elif ("forge is required" in text
+                        or "cast is required" in text):
+                    # A missing toolchain is infrastructure, not a harness fault.
+                    outcome = "infrastructure_error"
                 else:
                     outcome = "invalid_harness"
             self.conn.execute(
                 "UPDATE fork_verifications SET outcome_class=? WHERE id=?",
                 (outcome, row_id))
+
+        # Rows already migrated before missing-toolchain evidence was
+        # recognized: repair them idempotently so the fork ledger reports
+        # infrastructure errors instead of blaming the harness.
+        self.conn.execute(
+            "UPDATE fork_verifications SET outcome_class='infrastructure_error' "
+            "WHERE outcome_class='invalid_harness' AND ("
+            "detail LIKE '%forge is required%' "
+            "OR detail LIKE '%cast is required%')")
         self.conn.commit()
 
     def record(self, *, block: int, strategy: str, decision: str,

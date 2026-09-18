@@ -1,3 +1,5 @@
+import pathlib
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -6,7 +8,9 @@ from zero.fork import (
     ForkSafetyError,
     ForkResult,
     assert_local_write_target,
+    foundry_executable,
     is_loopback_rpc,
+    with_foundry_path,
 )
 
 
@@ -58,10 +62,58 @@ class TestAnvilFork(unittest.TestCase):
         self.assertTrue(AnvilFork("https://upstream", 1).installed())
         which.assert_called_once_with("anvil")
 
+    @patch("zero.fork.FOUNDRY_BIN_DIR")
     @patch("zero.fork.shutil.which")
-    def test_missing_anvil_is_reported(self, which):
+    def test_missing_anvil_is_reported(self, which, foundry_bin):
         which.return_value = None
+        foundry_bin.__truediv__ = lambda self, name: pathlib.Path(
+            "/nonexistent") / name
         self.assertFalse(AnvilFork("https://upstream", 1).installed())
+
+    @patch("zero.fork.FOUNDRY_BIN_DIR")
+    @patch("zero.fork.shutil.which")
+    def test_installed_falls_back_to_foundry_install_dir(
+            self, which, foundry_bin, tmp=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            fallback = pathlib.Path(tmp) / "anvil"
+            fallback.write_text("#!/bin/sh\n")
+            fallback.chmod(0o755)
+            foundry_bin.__truediv__ = (
+                lambda self, name: pathlib.Path(tmp) / name)
+            which.return_value = None
+            self.assertEqual(
+                AnvilFork("https://upstream", 1).installed(), True)
+            self.assertEqual(foundry_executable("anvil"), str(fallback))
+
+    @patch("zero.fork.shutil.which")
+    def test_path_hit_is_preferred_over_fallback(self, which):
+        which.return_value = "/usr/local/bin/anvil"
+        self.assertEqual(foundry_executable("anvil"), "/usr/local/bin/anvil")
+
+
+class TestFoundryPathEnv(unittest.TestCase):
+    @patch("zero.fork.FOUNDRY_BIN_DIR")
+    def test_foundry_bin_dir_is_prepended(self, foundry_bin):
+        foundry_bin.is_dir.return_value = True
+        foundry_bin.__str__ = lambda self: "/opt/foundry/bin"
+        env = with_foundry_path({"PATH": "/usr/bin:/bin"})
+        self.assertEqual(
+            env["PATH"], "/opt/foundry/bin:/usr/bin:/bin")
+        self.assertEqual(env, {
+            "PATH": "/opt/foundry/bin:/usr/bin:/bin"})
+
+    @patch("zero.fork.FOUNDRY_BIN_DIR")
+    def test_existing_path_entry_is_not_duplicated(self, foundry_bin):
+        foundry_bin.is_dir.return_value = True
+        foundry_bin.__str__ = lambda self: "/opt/foundry/bin"
+        env = with_foundry_path({"PATH": "/opt/foundry/bin:/usr/bin"})
+        self.assertEqual(env["PATH"], "/opt/foundry/bin:/usr/bin")
+
+    @patch("zero.fork.FOUNDRY_BIN_DIR")
+    def test_missing_install_dir_leaves_path_untouched(self, foundry_bin):
+        foundry_bin.is_dir.return_value = False
+        env = with_foundry_path({"PATH": "/usr/bin"})
+        self.assertEqual(env["PATH"], "/usr/bin")
 
 
 class TestForkResult(unittest.TestCase):

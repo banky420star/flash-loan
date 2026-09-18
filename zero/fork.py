@@ -7,13 +7,39 @@ writes to a remote RPC endpoint. Any write-capable integration must call
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 
 ARBITRUM_ONE_CHAIN_ID = 42161
+
+# Foundry's default install location is not always on the PATH of the shell
+# that launches the engine (tmux, systemd, cron). Resolve binaries from the
+# default install dir as a fallback so fork verification is harness-stable.
+FOUNDRY_BIN_DIR = Path.home() / ".foundry" / "bin"
+
+
+def foundry_executable(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    candidate = FOUNDRY_BIN_DIR / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
+def with_foundry_path(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an env copy whose PATH includes the Foundry install dir."""
+    merged = dict(env if env is not None else os.environ)
+    path = merged.get("PATH") or os.defpath
+    if FOUNDRY_BIN_DIR.is_dir() and str(FOUNDRY_BIN_DIR) not in path.split(os.pathsep):
+        merged["PATH"] = f"{FOUNDRY_BIN_DIR}{os.pathsep}{path}"
+    return merged
 
 OUTCOME_MEASURED_SUCCESS = "measured_success"
 OUTCOME_EXECUTION_REVERT = "execution_revert"
@@ -92,7 +118,7 @@ class AnvilFork:
         return f"http://{self.host}:{self.port}"
 
     def installed(self) -> bool:
-        return shutil.which(self.executable) is not None
+        return foundry_executable(self.executable) is not None
 
     def start(self):
         if not self.installed():
@@ -102,6 +128,7 @@ class AnvilFork:
             self.command(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=with_foundry_path(),
         )
 
     def command(self) -> list[str]:

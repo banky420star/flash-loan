@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Foundry is only needed for fork verification, not to start the engine, so
+# resolve it without failing when it is not installed at all.
+. "$ROOT/scripts/foundry_env.sh"
+
 if [[ -f .env ]]; then
   set -a
   # shellcheck disable=SC1091

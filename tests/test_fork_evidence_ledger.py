@@ -57,7 +57,8 @@ class TestForkEvidenceLedger(unittest.TestCase):
             all_rows = ledger.fork_economics(
                 limit=10, reserve_eligible_only=False)
             self.assertEqual([r["outcome_class"] for r in all_rows], [
-                "measured_success", "invalid_harness", "execution_revert"])
+                "measured_success", "infrastructure_error",
+                "execution_revert"])
             learned = ledger.fork_economics(limit=10)
             self.assertEqual([r["outcome_class"] for r in learned], [
                 "measured_success", "execution_revert"])
