@@ -89,8 +89,9 @@ def wallet_eth():
 def btc_balance():
     try:
         with urllib.request.urlopen(
-                f"https://blockchain.info/rawaddr/{BTC_ADDR}", timeout=15) as r:
-            return json.load(r)["final_balance"] / 1e8
+                f"https://mempool.space/api/address/{BTC_ADDR}", timeout=15) as r:
+            s = json.load(r)["chain_stats"]
+            return (s["funded_txo_sum"] - s["spent_txo_sum"]) / 1e8
     except Exception:
         return None
 
