@@ -36,7 +36,10 @@ HOT_WALLET = "0xc78096ce520d4d676e9b26dea1027bf32b390a2c"
 POLL_SECONDS = 5
 COOLDOWN = 60
 BLOCK_STALENESS = 40          # Arbitrum ~250ms blocks; quotes die in seconds
-SWAP_BUFFER = 0.01            # hop2 input shrinks 1% vs quoted hop1 output
+SWAP_BUFFER = 0.001           # hop2 input shrinks 0.1% vs quoted hop1 output
+                              # (= limit1 floor; the executor reverts on any
+                              # bigger shortfall, so the haircut is only there
+                              # to keep step2's amount <= step1's worst case)
 MINPROFIT_FRACTION = 0.8      # executor floor at 80% of expected net
 
 UNISWAP_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
@@ -116,12 +119,12 @@ def build_steps(rpc: Rpc, cand: dict, cache: dict) -> list[dict] | None:
         return None
     amount = int(round(float(cand["loan_size"]) * 10 ** asset_dec))
     hop1_out_i = int(round(float(hop1_out) * 10 ** mid_dec))
+    # hop2 consumes exactly the worst-case hop1 output (limit1 = hop2_in):
+    # any bigger shortfall reverts step1 itself instead of stranding step2.
     hop2_in = int(hop1_out_i * (1 - SWAP_BUFFER))
     hop2_out_i = int(round(float(hop2_out) * 10 ** asset_dec))
-    # hop2 runs on a slightly smaller input; scale its expected output down
-    # and give the slippage guard a little extra room on top.
-    limit1 = int(hop1_out_i * (1 - SWAP_BUFFER) * 0.999)
-    limit2 = int(hop2_out_i * (1 - SWAP_BUFFER) * 0.999)
+    limit1 = hop2_in
+    limit2 = int(hop2_out_i * 0.999)
 
     return [
         {"kind": 0, "target": r1, "tokenIn": asset, "tokenOut": mid,

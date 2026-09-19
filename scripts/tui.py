@@ -117,6 +117,29 @@ def trader_status():
     return running, last
 
 
+def sniper_status():
+    """(running, one-line summary) for the new-pool sniper."""
+    try:
+        out = subprocess.run(["pgrep", "-f", "scripts/newpool_sniper.py"],
+                             capture_output=True, text=True).stdout.strip()
+        running = bool(out)
+    except Exception:
+        running = False
+    info = "no new pools seen"
+    try:
+        events = json.loads((os.path.join(REPO, "run", "newpool_events.json"))
+                            and open(os.path.join(REPO, "run",
+                                                  "newpool_events.json")).read())
+        pools = [e for e in events if e.get("event") == "new_pool"]
+        if pools:
+            p = pools[-1]
+            info = (f"{len(pools)} new pool(s) seen, latest "
+                    f"{p.get('pair', '?')} fee {p.get('fee')}")
+    except Exception:
+        pass
+    return running, info
+
+
 def ledger_stats():
     try:
         con = sqlite3.connect(LEDGER)
@@ -167,6 +190,13 @@ def render():
     else:
         lines.append(f"  Live trader {RED}NOT RUNNING{RST}"
                      f"  {DIM}(python3 scripts/live_trader.py){RST}")
+
+    snip_running, snip_info = sniper_status()
+    if snip_running:
+        lines.append(f"  Newpool     {GREEN}WATCHING{RST}  {DIM}{snip_info}{RST}")
+    else:
+        lines.append(f"  Newpool     {RED}NOT RUNNING{RST}"
+                     f"  {DIM}(python3 scripts/newpool_sniper.py){RST}")
 
     btc = btc_balance()
     if btc is None:
