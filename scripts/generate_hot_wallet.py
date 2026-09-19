@@ -25,7 +25,7 @@ def main() -> None:
         print(f"existing wallet found: {private_key_to_address(key)}")
         return
     KEY_PATH.parent.mkdir(mode=0o700, exist_ok=True)
-    KEY_PATH.write_bytes(generate_private_key())
+    KEY_PATH.write_text(generate_private_key().hex() + "\n")
     os.chmod(KEY_PATH, 0o600)
     address = private_key_to_address(KEY_PATH.read_bytes())
     print(f"new hot wallet: {address}")

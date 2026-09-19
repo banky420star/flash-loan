@@ -60,7 +60,7 @@ def main() -> None:
         sys.exit("wallet has no gas ETH yet — fund it first")
 
     artifact = json.loads(BYTECODE_PATH.read_text())
-    creation = artifact["bytecode"]["object"]
+    creation = artifact["bytecode"]["object"].removeprefix("0x")
     # constructor(address pool_) — 32-byte left-padded word
     ctor = AAVE_POOL[2:].lower().rjust(64, "0")
     data = bytes.fromhex(creation + ctor)
