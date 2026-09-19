@@ -10,8 +10,14 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+from fractions import Fraction
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from zero.keccak import keccak256
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(REPO, "run", "swarm.log")
@@ -23,6 +29,29 @@ RPCS = ["https://arbitrum-one.public.blastapi.io", "https://arb1.arbitrum.io/rpc
 CLEAR = "\033[2J\033[H"
 BOLD, DIM, RST = "\033[1m", "\033[2m", "\033[0m"
 GREEN, RED, YEL, CYN = "\033[32m", "\033[31m", "\033[33m", "\033[36m"
+
+CFG = json.loads(os.path.join(REPO, "config", "arbitrum.json")
+                 and open(os.path.join(REPO, "config", "arbitrum.json")).read())
+PRICE_BASE = "USDC"
+# Price board: token vs USDC on each venue. Pool addresses resolved once at
+# startup (deepest fee tier by liquidity), prices sampled from slot0.
+PRICE_VENUES = [
+    ("uni", CFG["venues"]["uniswap_v3"]["factory"]),
+    ("sushi", CFG["venues"]["sushi_v3"]["factory"]),
+    ("camelot", CFG["venues"]["camelot_v3"]["factory"]),
+]
+PRICE_TOKENS = ["WETH", "DAI", "USDt0", "USDC.e"]
+PRICE_REFRESH_S = 30
+_price_pools = {}          # token_sym -> {venue: {pool, token0, dec_tok}}
+_price_board = {"ts": 0, "rows": []}
+
+
+def _sel(sig: str) -> str:
+    return "0x" + keccak256(sig.encode()).hex()[:8]
+
+
+def _uint(hexdata):
+    return int.from_bytes(bytes.fromhex(hexdata[2:]), "big")
 
 
 def rpc(method, params):
@@ -168,6 +197,146 @@ def recent_ledger(n=3):
         return []
 
 
+def resolve_price_pools():
+    """Once: find each token's deepest pool vs USDC on each venue."""
+    usdc = CFG["tokens"]["USDC"]
+    for sym in PRICE_TOKENS:
+        tok = CFG["tokens"].get(sym)
+        if not tok:
+            continue
+        dec = None
+        try:
+            dec = _uint(rpc("eth_call",
+                            [{"to": tok, "data": _sel("decimals()")},
+                             "latest"]))
+        except Exception:
+            continue
+        venues = {}
+        for vname, factory in PRICE_VENUES:
+            pools = []
+            if vname == "camelot":            # Algebra: getPool(a,b)
+                sig = "getPool(address,address)"
+                words = [tok[2:].lower().rjust(64, "0"),
+                         usdc[2:].lower().rjust(64, "0")]
+            else:                             # Uniswap V3: getPool(a,b,fee)
+                sig = "getPool(address,address,uint24)"
+                words = None
+            try:
+                if words is None:
+                    for fee in (500, 3000, 100, 10000):
+                        data = _sel(sig) + tok[2:].lower().rjust(64, "0") \
+                            + usdc[2:].lower().rjust(64, "0") \
+                            + f"{fee:064x}"
+                        out = rpc("eth_call", [{"to": factory, "data": data},
+                                               "latest"])
+                        if out and int(out[-40:], 16) != 0:
+                            pools.append("0x" + out[-40:])
+                else:
+                    out = rpc("eth_call", [{"to": factory,
+                                            "data": _sel(sig) + "".join(words)},
+                                           "latest"])
+                    if out and int(out[-40:], 16) != 0:
+                        pools.append("0x" + out[-40:])
+            except Exception:
+                continue
+            # deepest = most liquidity
+            best, best_liq = None, -1
+            for pool in pools:
+                try:
+                    t0 = "0x" + rpc("eth_call",
+                                    [{"to": pool, "data": _sel("token0()")},
+                                     "latest"])[-40:]
+                    liq = _uint(rpc("eth_call",
+                                    [{"to": pool, "data": _sel("liquidity()")},
+                                     "latest"]))
+                    if liq > best_liq:
+                        best, best_liq = {"pool": pool, "token0": t0.lower(),
+                                          "dec_tok": dec}, liq
+                except Exception:
+                    continue
+            if best:
+                venues[vname] = best
+        if venues:
+            _price_pools[sym] = venues
+
+
+def refresh_price_board():
+    """Sample slot0 on every resolved pool; compute USD price per venue."""
+    usdc = CFG["tokens"]["USDC"]
+    rows = []
+    for sym, venues in _price_pools.items():
+        row = {"sym": sym, "prices": {}, "spread": None}
+        for vname, meta in venues.items():
+            try:
+                data = rpc("eth_call",
+                           [{"to": meta["pool"], "data": _sel("slot0()")},
+                            "latest"])
+                if not data:
+                    continue
+                sq = int(data[2:66], 16)         # slot0 word0 = sqrtPriceX96
+                if sq <= 0:
+                    continue
+                # raw = token1_units per token0_units (exact rational)
+                raw = Fraction(sq * sq, 1 << 192)
+                tok_is0 = meta["token0"] == CFG["tokens"][sym].lower()
+                # USD per whole token, USDC treated as $1
+                dec_tok, dec_usdc = meta["dec_tok"], 6
+                if tok_is0:                      # token=token0, USDC=token1
+                    price = float(raw * 10 ** (dec_tok - dec_usdc))
+                else:                            # USDC=token0
+                    price = float(10 ** (dec_tok - dec_usdc) / raw)
+                if price > 0:
+                    row["prices"][vname] = price
+            except Exception:
+                continue
+        if len(row["prices"]) >= 2:
+            ps = [p for p in row["prices"].values() if p > 0]
+            if ps:
+                row["spread"] = (max(ps) - min(ps)) / min(ps) * 100
+        rows.append(row)
+    _price_board["rows"] = rows
+    _price_board["ts"] = time.time()
+
+
+_price_thread = None
+
+
+def _price_worker():
+    try:
+        if not _price_pools:
+            resolve_price_pools()
+        if _price_pools:
+            refresh_price_board()
+    except Exception:
+        pass
+
+
+def price_panel_lines():
+    global _price_thread
+    if time.time() - _price_board["ts"] > PRICE_REFRESH_S \
+            and (_price_thread is None or not _price_thread.is_alive()):
+        _price_thread = threading.Thread(target=_price_worker, daemon=True)
+        _price_thread.start()
+    lines = []
+    if not _price_board["rows"]:
+        return [f"  {DIM}price board warming up…{RST}"]
+    for row in _price_board["rows"]:
+        parts = []
+        for vname in ("uni", "sushi", "camelot"):
+            p = row["prices"].get(vname)
+            parts.append(f"{vname} {p:,.4f}" if p is not None
+                         else f"{vname} {DIM}—{RST}")
+        sp = row["spread"]
+        sp_s = "—"
+        if sp is not None:
+            sp_s = f"{sp:.3f}%"
+            if sp > 0.3:
+                sp_s = YEL + sp_s + RST
+        lines.append(f"  {row['sym']:6s} " + " | ".join(parts)
+                     + f"   spread {sp_s}")
+    return lines
+
+
 def activity_feed(n=6, max_age=3600):
     """Merged recent events from the live trader and the new-pool sniper."""
     cutoff = time.time() - max_age
@@ -253,6 +422,10 @@ def render():
                      f" best net ${best_s}")
     else:
         lines.append("  Ledger      unavailable")
+
+    lines.append(f"  {BOLD}Prices vs USDC{RST}"
+                 f"  {DIM}sampled {time.strftime('%H:%M:%S', time.localtime(_price_board['ts'])) if _price_board['ts'] else '…'}{RST}")
+    lines.extend(price_panel_lines())
 
     lines.append(f"  {BOLD}Latest evaluations{RST}")
     for ts, strat, size, net, dec in recent_ledger():
