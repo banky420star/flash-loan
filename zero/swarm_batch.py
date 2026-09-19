@@ -303,8 +303,9 @@ def build_scan_context_batched(engine, block: int,
 
     aave_pool = aave_pool or engine.aave.pool_address(block=block)
     oracle = oracle or engine.aave.oracle_address(block=block)
-    premium_bps = int(engine.aave.flashloan_premium_total(
-        aave_pool, block=block))
+    # Executor's live path is runBalancer (Balancer vault, 0% premium,
+    # fork-tested) — model the trade we would actually fire, not Aave's.
+    premium_bps = 0
     if tokens is None:
         tokens = build_token_registry_batched(
             engine, block, pool=aave_pool, oracle=oracle,

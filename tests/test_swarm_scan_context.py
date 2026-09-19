@@ -95,7 +95,9 @@ class TestSwarmScanContext(unittest.TestCase):
         engine = FakeEngine()
         context = build_scan_context(engine, block=123, route_catalog=ROUTES)
         self.assertEqual(context.block, 123)
-        self.assertEqual(context.premium_bps, 5)
+        # Scan context models the executor's live path: runBalancer via the
+        # Balancer vault — 0% premium (not Aave's 5bps).
+        self.assertEqual(context.premium_bps, 0)
         self.assertEqual(context.eth_price_usd, 2500.0)
         self.assertEqual(context.gas_usd, 0.25)
         self.assertEqual(set(context.pool_states), {POOL_A, POOL_B})

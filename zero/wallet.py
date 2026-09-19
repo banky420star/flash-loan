@@ -89,13 +89,16 @@ def _rlp_encode(items: list) -> bytes:
 
 
 def sign_transaction(key: bytes, *, nonce: int, gas_price_gwei: float,
-                     gas_limit: int, to: str, value_wei: int,
+                     gas_limit: int, to: str | None, value_wei: int,
                      data: bytes, chain_id: int) -> str:
-    """Sign a legacy EIP-155 tx and return the raw hex payload."""
+    """Sign a legacy EIP-155 tx and return the raw hex payload.
+
+    to=None means contract creation (the tx carries data, no recipient).
+    """
     gas_price_wei = int(gas_price_gwei * 10**9)
-    unsigned = _rlp_encode([nonce, gas_price_wei, gas_limit,
-                            bytes.fromhex(to[2:]), value_wei, data,
-                            chain_id, 0, 0])
+    to_bytes = b"" if to is None else bytes.fromhex(to[2:])
+    unsigned = _rlp_encode([nonce, gas_price_wei, gas_limit, to_bytes,
+                            value_wei, data, chain_id, 0, 0])
     z = int.from_bytes(keccak256(unsigned), "big")
     secret = int.from_bytes(key, "big")
     if not 0 < secret < _N:
@@ -122,9 +125,8 @@ def sign_transaction(key: bytes, *, nonce: int, gas_price_gwei: float,
         break
     # Legacy EIP-155: v = 35 + 2*chainId + yParity.
     v = 35 + 2 * chain_id + y_parity
-    signed = _rlp_encode([nonce, gas_price_wei, gas_limit,
-                          bytes.fromhex(to[2:]), value_wei, data,
-                          v, r, s])
+    signed = _rlp_encode([nonce, gas_price_wei, gas_limit, to_bytes,
+                          value_wei, data, v, r, s])
     return "0x" + signed.hex()
 
 

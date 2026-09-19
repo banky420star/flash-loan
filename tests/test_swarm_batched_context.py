@@ -108,7 +108,8 @@ class TestBatchedScanContext(unittest.TestCase):
         self.assertEqual(context.block, 555)
         self.assertEqual(context.aave_pool, AAVE_POOL)
         self.assertEqual(context.oracle, ORACLE)
-        self.assertEqual(context.premium_bps, 5)
+        # Scan models the executor's live path: runBalancer, 0% premium.
+        self.assertEqual(context.premium_bps, 0)
         self.assertAlmostEqual(context.eth_price_usd, 2400.0)
         self.assertAlmostEqual(context.gas_usd, 2.4)
         self.assertEqual(context.pool_states[POOL_A]["sqrtPriceX96"], 111)

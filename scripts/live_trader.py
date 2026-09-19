@@ -154,7 +154,8 @@ def fire(rpc: Rpc, cand: dict, cfg: dict) -> None:
     min_profit = max(1, int(float(cand["expected_net_usd"]) * 0.8 / price *
                             10 ** (route["base_decimals"] if asset == route["base"].lower()
                                    else route["quote_decimals"])))
-    calldata = build_run_calldata("aave", asset, amount, min_profit,
+    # Balancer vault: 0% flash premium (vs Aave 5bps), fork-tested path.
+    calldata = build_run_calldata("balancer", asset, amount, min_profit,
                                   int(time.time()) + 90, steps)
     try:
         est = int(rpc.call("eth_estimateGas",

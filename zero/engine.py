@@ -434,8 +434,8 @@ class ShadowEngine:
         if context is None:
             pool_address = self.aave.pool_address(block=block)
             oracle = self.aave.oracle_address(block=block)
-            premium_bps = self.aave.flashloan_premium_total(
-                pool_address, block=block)
+            # Executor's live path is runBalancer (0% premium, fork-tested).
+            premium_bps = 0
             eth_asset = self.config["arbitrage"]["eth_for_gas"]
             eth_price = self.aave.asset_price(oracle, eth_asset, block=block)
             gas_usd = self._gas_cost_usd(eth_price)

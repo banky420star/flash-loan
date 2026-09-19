@@ -314,7 +314,9 @@ def build_scan_context(engine, block: int,
 
     aave_pool = engine.aave.pool_address(block=block)
     oracle = engine.aave.oracle_address(block=block)
-    premium_bps = engine.aave.flashloan_premium_total(aave_pool, block=block)
+    # The executor's live path is runBalancer (Balancer vault, 0% premium,
+    # fork-tested) — model the economics of the trade we would actually fire.
+    premium_bps = 0
     tokens = build_token_registry(
         engine.aave, block, pool=aave_pool, oracle=oracle)
     eth_asset = engine.config["arbitrage"]["eth_for_gas"]
