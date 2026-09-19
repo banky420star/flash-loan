@@ -154,6 +154,44 @@ def ledger_stats():
         return None, None, None
 
 
+def recent_ledger(n=3):
+    """Last n evaluated opportunities: [(time, strategy, size, net, decision)]."""
+    try:
+        con = sqlite3.connect(LEDGER)
+        rows = con.execute(
+            "SELECT ts, strategy, loan_size, net_profit, decision "
+            "FROM opportunities ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        con.close()
+        return rows
+    except Exception:
+        return []
+
+
+def activity_feed(n=6, max_age=3600):
+    """Merged recent events from the live trader and the new-pool sniper."""
+    cutoff = time.time() - max_age
+    events = []
+    for name, path in (("trader", "run/live_trades.json"),
+                       ("sniper", "run/newpool_events.json")):
+        try:
+            for ev in json.loads(open(os.path.join(REPO, path)).read()):
+                if ev.get("ts", 0) >= cutoff:
+                    events.append((ev.get("ts", 0), name, ev))
+        except Exception:
+            continue
+    events.sort(reverse=True)
+    out = []
+    for ts, name, ev in events[:n]:
+        t = time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "--:--:--"
+        kind = ev.get("event", "?")
+        detail = ev.get("error") or ev.get("reason") or ev.get("tx") or \
+            ev.get("pair") or ev.get("name") or ""
+        if kind == "evaluated" and isinstance(ev.get("best"), dict):
+            detail = f"{ev.get('pair','?')} best net ${ev['best'].get('net_usd', 0):.2f}"
+        out.append(f"{t} {name:6s} {kind:14s} {str(detail)[:40]}")
+    return out
+
+
 def render():
     now = time.strftime("%H:%M:%S")
     lines = []
@@ -214,8 +252,22 @@ def render():
                      f" best net ${best_s}")
     else:
         lines.append("  Ledger      unavailable")
+
+    lines.append(f"  {BOLD}Latest evaluations{RST}")
+    for ts, strat, size, net, dec in recent_ledger():
+        t = time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "--:--:--"
+        mark = GREEN if dec == "PASS" else (YEL if dec == "OBSERVE" else DIM)
+        strat_s = (strat or "")[:16]
+        lines.append(f"  {DIM}{t}{RST} {strat_s:16s} ${size:>10.2f}"
+                     f"  net {net:>9.3f}  {mark}{dec}{RST}")
+
+    feed = activity_feed()
+    if feed:
+        lines.append(f"  {BOLD}Live activity (trader + sniper){RST}")
+        lines.extend(f"  {row}" for row in feed)
+
     lines.append("")
-    lines.append(f"  {DIM}refresh 10s · Ctrl-C to exit{RST}")
+    lines.append(f"  {DIM}refresh 5s · Ctrl-C to exit{RST}")
     return "\n".join(lines)
 
 
@@ -224,7 +276,7 @@ def main():
     while True:
         sys.stdout.write(CLEAR + render())
         sys.stdout.flush()
-        time.sleep(10)
+        time.sleep(5)
 
 
 if __name__ == "__main__":
