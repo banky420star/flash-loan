@@ -95,6 +95,28 @@ def btc_balance():
         return None
 
 
+def trader_status():
+    """(status, last_event_summary) for the live trader."""
+    try:
+        out = subprocess.run(["pgrep", "-f", "scripts/live_trader.py"],
+                             capture_output=True, text=True).stdout.strip()
+        running = bool(out)
+    except Exception:
+        running = False
+    last = None
+    try:
+        events = json.loads((os.path.join(REPO, "run", "live_trades.json"))
+                            and open(os.path.join(REPO, "run",
+                                                  "live_trades.json")).read())
+        if events:
+            ev = events[-1]
+            last = ev.get("event", "?") + (f" tx {ev['tx'][:12]}…"
+                                           if ev.get("tx") else "")
+    except Exception:
+        pass
+    return running, last
+
+
 def ledger_stats():
     try:
         con = sqlite3.connect(LEDGER)
@@ -129,12 +151,22 @@ def render():
         lines.append(f"  Hot wallet  {RED}?{RST}")
     else:
         mark = GREEN if eth > 0 else RED
-        note = "READY to deploy+trade" if eth >= 0.005 else "AWAITING FUNDING"
+        note = ("LIVE — gas funded" if eth >= 0.0002
+                else "DUST — top up for trading")
         lines.append(f"  Hot wallet  {eth:.5f} ETH  {mark}{note}{RST}")
         if mn:
             lines.append(f"  {DIM}mainnet  {mn:.6f} ETH  "
                          f"{'(in flight to Arbitrum)' if mn > 0 and eth == 0 else ''}{RST}")
     lines.append(f"  {DIM}{HOT_WALLET}{RST}")
+
+    running, last_ev = trader_status()
+    if running:
+        lines.append(f"  Live trader {GREEN}ARMED{RST}"
+                     + (f"  {DIM}last: {last_ev}{RST}" if last_ev else
+                        f"  {DIM}awaiting first candidate{RST}"))
+    else:
+        lines.append(f"  Live trader {RED}NOT RUNNING{RST}"
+                     f"  {DIM}(python3 scripts/live_trader.py){RST}")
 
     btc = btc_balance()
     if btc is None:
