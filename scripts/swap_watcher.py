@@ -22,6 +22,7 @@ Events log to run/swap_watch_events.json.
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
 
@@ -158,8 +159,14 @@ def evaluate_pair(rpc, pools, registry, head):
     best candidate dict (sniper cand shape) or None."""
     prices = {t.address: t.price_usd for t in registry.values()}
     best = None
-    states = {p["addr"]: pool_state(rpc, p["addr"], block=head)
-              for p in pools}
+    # Concurrent state fetch: the dislocation closes in ~1-2s, so the eval
+    # must not serialize 2-4 RPC round trips.
+    states = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {p["addr"]: ex.submit(pool_state, rpc, p["addr"], head)
+                for p in pools}
+        for addr, fut in futs.items():
+            states[addr] = fut.result()
     for i, pa in enumerate(pools):
         for pb in pools:
             if pa["addr"] == pb["addr"]:
@@ -343,14 +350,17 @@ def main() -> None:
                              "pool": pool, "pair": sorted(pair),
                              "skew": round(skew * 100, 4),
                              "threshold": round(threshold * 100, 3)})
+                        _t0 = time.time()
                         best = evaluate_pair(
                             rpc, pools_by_pair[pair], registry, head)
+                        _eval_s = time.time() - _t0
                         if best is None:
                             log({"ts": time.time(), "event": "unquotable",
                                  "pool": pool})
                             continue
                         log({"ts": time.time(), "event": "evaluated",
-                             "pair": sorted(pair), "best": {
+                             "pair": sorted(pair), "eval_s": round(_eval_s, 2),
+                             "best": {
                                  k: best[k] for k in
                                  ("net_usd", "size_usd", "gross_usd",
                                   "fee_sum")}})
