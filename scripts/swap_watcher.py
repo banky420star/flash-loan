@@ -58,8 +58,9 @@ LOGS_PRIMARY = "https://arb1.arbitrum.io/rpc"
 LOGS_FALLBACK = "https://arbitrum-one.public.blastapi.io"
 BLAST_CHUNK = 10
 
+# Canonical Uniswap V3 Swap: 0xc42079f9… — verified live (21 events/100 blocks)
 SWAP_TOPIC0 = "0x" + keccak256(
-    b"Swap(address,address,int256,int256,uint128,uint160,uint128)").hex()
+    b"Swap(address,address,int256,int256,uint160,uint128,int24)").hex()
 
 
 def log(event: dict) -> None:
